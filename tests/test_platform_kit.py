@@ -6,6 +6,7 @@ from brunost_platform.application import PlatformApplication
 from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.models import Submission
 from brunost_platform.project import create_contest, create_project, create_task, template_files
+from brunost_platform.store import SQLitePlatformStore
 
 
 class FakeJudge:
@@ -49,14 +50,18 @@ def test_init_refuses_to_overwrite(tmp_path: Path):
 
 def test_application_submits_and_keeps_leaderboard_private(tmp_path: Path):
     judge = FakeJudge()
-    from brunost_platform.store import SQLitePlatformStore
-
     app = PlatformApplication(judge, store=SQLitePlatformStore(tmp_path / "platform.db"))
-    result = app.submit(Submission("submission-1", "student-1", "ioai/v1", "/tmp/submission", "contest-1"), evaluation_kind="agent")
+    result = app.submit(Submission("submission-1", "student-1", "ioai/v1", "/tmp/submission", "contest-1"), evaluation_kind="batch")
     assert result["evaluation_id"] == "eval-1"
-    assert judge.calls[0]["evaluation_kind"] == "agent"
+    assert judge.calls[0]["evaluation_kind"] == "batch"
     assert judge.calls[0]["submission_artifact_id"] == "a" * 64
     assert judge.calls[0]["metadata"]["contest_id"] == "contest-1"
+
+
+def test_uninstalled_agent_runner_fails_closed(tmp_path: Path):
+    app = PlatformApplication(FakeJudge(), store=SQLitePlatformStore(tmp_path / "platform.db"))
+    with pytest.raises(NotImplementedError, match="runner plugin"):
+        app.submit(Submission("submission-1", "student-1", "ioai/v1", "/tmp/submission", "contest-1"), evaluation_kind="agent")
 
 
 def test_task_and_contest_scaffolding(tmp_path: Path):

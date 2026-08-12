@@ -33,7 +33,7 @@ def test_sqlite_store_and_result_projection(tmp_path: Path):
     store.create_contest(Contest("c1", "National Final", ("ioai/v1",)))
     app = PlatformApplication(FakeJudge(), store=store)
     submission = Submission("s1", "u1", "ioai/v1", "/tmp/submission", "c1")
-    queued = app.submit(submission, evaluation_kind="agent")
+    queued = app.submit(submission, evaluation_kind="batch")
     assert queued["status"] == "queued"
     app.record_result(submission, {"evaluation_id": "s1", "status": "completed", "score": 0.9}, visible=True)
     assert store.list_leaderboard("c1")[0].score == 0.9

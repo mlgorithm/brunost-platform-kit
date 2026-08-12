@@ -28,6 +28,10 @@ class PlatformApplication:
         return self.store.create_contest(contest)
 
     def submit(self, submission: Submission, *, evaluation_kind: str = "batch", **options: Any) -> dict[str, Any]:
+        if evaluation_kind in {"agent", "match"}:
+            raise NotImplementedError(
+                f"evaluation kind '{evaluation_kind}' requires an installed agent/game runner plugin"
+            )
         if self.store is not None:
             self.store.save_submission(submission)
         if self.store is None:
