@@ -1,9 +1,0 @@
-{
-  "name": "mlgorithm/laravel-brunost",
-  "description": "Laravel integration for Brunost competition platforms",
-  "type": "library",
-  "license": "MIT",
-  "require": {"php": ">=8.2", "illuminate/support": "^10.0|^11.0|^12.0", "illuminate/http": "^10.0|^11.0|^12.0"},
-  "autoload": {"psr-4": {"Brunost\\": "src/"}},
-  "extra": {"laravel": {"providers": ["Brunost\\BrunostServiceProvider"]}}
-}

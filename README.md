@@ -1,8 +1,8 @@
 # Brunost Platform Kit
 
-The Platform Kit is the optional application layer above [Brunost Judge](https://github.com/mlgorithm/brunost-judge).
-It provides a cohesive, framework-neutral developer experience without
-requiring PHP, Laravel, or a specific frontend.
+The Platform Kit is the optional Python application layer above [Brunost Judge](https://github.com/mlgorithm/brunost-judge).
+It provides a cohesive FastAPI-first developer experience without coupling the
+Judge to a specific frontend or country platform.
 
 ## Quick start
 
@@ -43,10 +43,10 @@ once with `SQLitePlatformStore.accept_callback_event(event_id)`. Use
 `PlatformApplication.handle_callback()` in a framework route to automatically
 update the submission and leaderboard projection.
 
-Framework integrations are included under `integrations/`: `django-brunost`
-provides models, migrations, admin, callback routes, and a doctor command;
-`laravel-brunost` provides Composer service registration, migrations, Eloquent
-models, Judge client, and callback routes.
+The Django package under `integrations/django-brunost` provides models,
+migrations, admin, callback routes, submissions, leaderboard projection, and a
+doctor command. FastAPI is the maintained reference application; other Python
+frameworks can use the same dependency-free gateway and contracts.
 
 ## Integration modes
 
