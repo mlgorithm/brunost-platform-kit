@@ -31,24 +31,23 @@ def judge_callback(request: HttpRequest) -> JsonResponse:
     try:
         with transaction.atomic():
             submission = Submission.objects.select_for_update().select_related("contest").get(pk=submission_id)
-            receipt = CallbackReceipt.objects.select_for_update().filter(event_id=event_id).first()
-            if receipt is not None:
-                if receipt.submission_id != submission.submission_id or receipt.status == CallbackReceipt.STATUS_APPLIED:
-                    return JsonResponse({"status": "duplicate", "event_id": event_id})
-                if receipt.status == CallbackReceipt.STATUS_PROCESSING and receipt.updated_at >= timezone.now() - timedelta(minutes=15):
-                    return JsonResponse({"status": "duplicate", "event_id": event_id})
+            receipt, _created = CallbackReceipt.objects.get_or_create(
+                event_id=event_id,
+                defaults={"submission": submission, "payload": payload, "status": CallbackReceipt.STATUS_PROCESSING},
+            )
+            # Re-read the row with a lock. get_or_create handles the unique
+            # event-ID race; this lock serializes the projection itself.
+            receipt = CallbackReceipt.objects.select_for_update().get(pk=receipt.pk)
+            if receipt.submission_id != submission.submission_id or receipt.status == CallbackReceipt.STATUS_APPLIED:
+                return JsonResponse({"status": "duplicate", "event_id": event_id})
+            if receipt.status == CallbackReceipt.STATUS_PROCESSING and receipt.updated_at >= timezone.now() - timedelta(minutes=15) and not _created:
+                return JsonResponse({"status": "duplicate", "event_id": event_id})
+            if not _created:
                 receipt.status = CallbackReceipt.STATUS_PROCESSING
                 receipt.attempts += 1
                 receipt.payload = payload
                 receipt.last_error = ""
                 receipt.save(update_fields=["status", "attempts", "payload", "last_error", "updated_at"])
-            else:
-                receipt = CallbackReceipt.objects.create(
-                    event_id=event_id,
-                    submission=submission,
-                    payload=payload,
-                    status=CallbackReceipt.STATUS_PROCESSING,
-                )
             submission.status = payload.get("status", "failed")
             submission.score = payload.get("score")
             submission.metrics = payload.get("metrics") or {}

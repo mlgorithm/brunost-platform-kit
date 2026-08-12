@@ -3,6 +3,7 @@ import uuid
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from brunost_platform.application import PlatformApplication
@@ -56,10 +57,14 @@ def dispatch_submission_outbox(outbox_id: str | None = None) -> dict:
         query = SubmissionDispatchOutbox.objects.select_for_update().select_related("submission", "submission__contest")
         if outbox_id:
             outbox = query.get(outbox_id=outbox_id)
+            if outbox.status == SubmissionDispatchOutbox.STATUS_SUBMITTED:
+                return {"status": "submitted", "submission_id": outbox.submission_id, "evaluation_id": outbox.judge_evaluation_id}
+            if outbox.status == SubmissionDispatchOutbox.STATUS_SENDING and outbox.updated_at >= now - timedelta(minutes=15):
+                return {"status": "sending", "submission_id": outbox.submission_id}
         else:
             outbox = query.filter(
-                status__in=[SubmissionDispatchOutbox.STATUS_PENDING, SubmissionDispatchOutbox.STATUS_FAILED],
-                next_attempt_at__lte=now,
+                Q(status__in=[SubmissionDispatchOutbox.STATUS_PENDING, SubmissionDispatchOutbox.STATUS_FAILED], next_attempt_at__lte=now)
+                | Q(status=SubmissionDispatchOutbox.STATUS_SENDING, updated_at__lt=now - timedelta(minutes=15))
             ).order_by("created_at").first()
         if outbox is None:
             return {"status": "empty"}
