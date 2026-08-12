@@ -1,0 +1,40 @@
+[project]
+name = "brunost-platform-kit"
+version = "0.1.0"
+description = "Framework-neutral starter kit for building platforms on Brunost Judge"
+requires-python = ">=3.11"
+dependencies = []
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Mlgorithm contributors"}]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Framework :: FastAPI",
+]
+
+[project.urls]
+Homepage = "https://github.com/mlgorithm/brunost-platform-kit"
+Repository = "https://github.com/mlgorithm/brunost-platform-kit"
+Issues = "https://github.com/mlgorithm/brunost-platform-kit/issues"
+
+[project.scripts]
+brunost-platform = "brunost_platform.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+brunost_platform = ["templates/**/*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
