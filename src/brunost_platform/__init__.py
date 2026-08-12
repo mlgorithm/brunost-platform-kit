@@ -5,6 +5,7 @@ may choose FastAPI, a Node framework, or another web stack while using the same
 judge gateway and platform module contracts.
 """
 
+from brunost_platform.artifacts import artifact_id, pack_directory
 from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.gateway import HttpJudgeGateway, JudgeGateway, JudgeGatewayError
 from brunost_platform.identity import ExternalIdentityAdapter, LocalIdentityAdapter
@@ -22,6 +23,8 @@ __all__ = [
     "SQLitePlatformStore",
     "Submission",
     "User",
+    "artifact_id",
+    "pack_directory",
     "verify_judge_callback",
 ]
 

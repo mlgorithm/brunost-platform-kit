@@ -31,15 +31,22 @@ Generated applications own users, contests, notifications, and leaderboard
 policy. They call the judge through the stable `JudgeGateway`; the judge owns
 sandbox execution, scoring, scheduling, and worker operations.
 
+The kit uploads every submission as a deterministic, content-addressed artifact
+before calling the Judge; filesystem paths never cross the service boundary.
 The kit also includes a durable `SQLitePlatformStore` for standalone deployments
 and replaceable identity, notification, and leaderboard adapters. Installations
 can start with SQLite and move to their preferred database or external LMS
 without changing the judge contract.
 
 Judge callbacks are verified with `verify_judge_callback()` and then accepted
-once with `SQLitePlatformStore.accept_callback_event(event_id)`. This keeps
-retries safe without making the kit depend on FastAPI, an ORM, or a particular
-country platform.
+once with `SQLitePlatformStore.accept_callback_event(event_id)`. Use
+`PlatformApplication.handle_callback()` in a framework route to automatically
+update the submission and leaderboard projection.
+
+Framework integrations are included under `integrations/`: `django-brunost`
+provides models, migrations, admin, callback routes, and a doctor command;
+`laravel-brunost` provides Composer service registration, migrations, Eloquent
+models, Judge client, and callback routes.
 
 ## Integration modes
 

@@ -16,6 +16,13 @@ class FakeJudge:
         self.calls.append(kwargs)
         return {"evaluation_id": "eval-1", "execution_id": "eval-1", "status": "queued", "score": None}
 
+    def upload_artifact(self, path):
+        self.uploaded = path
+        return {"artifact_id": "a" * 64}
+
+    def cancel(self, evaluation_id):
+        return {"evaluation_id": evaluation_id, "status": "canceled"}
+
     def get_evaluation(self, evaluation_id):
         return {"evaluation_id": evaluation_id}
 
@@ -40,12 +47,15 @@ def test_init_refuses_to_overwrite(tmp_path: Path):
         create_project(root, template="minimal")
 
 
-def test_application_submits_and_keeps_leaderboard_private():
+def test_application_submits_and_keeps_leaderboard_private(tmp_path: Path):
     judge = FakeJudge()
-    app = PlatformApplication(judge)
+    from brunost_platform.store import SQLitePlatformStore
+
+    app = PlatformApplication(judge, store=SQLitePlatformStore(tmp_path / "platform.db"))
     result = app.submit(Submission("submission-1", "student-1", "ioai/v1", "/tmp/submission", "contest-1"), evaluation_kind="agent")
     assert result["evaluation_id"] == "eval-1"
     assert judge.calls[0]["evaluation_kind"] == "agent"
+    assert judge.calls[0]["submission_artifact_id"] == "a" * 64
     assert judge.calls[0]["metadata"]["contest_id"] == "contest-1"
 
 

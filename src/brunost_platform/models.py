@@ -61,8 +61,10 @@ class User:
     organization_id: str | None = None
     roles: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    password_hash: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["roles"] = list(self.roles)
+        value.pop("password_hash", None)
         return value
