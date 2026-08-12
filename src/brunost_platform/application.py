@@ -91,18 +91,41 @@ class PlatformApplication:
         submission = self.store.get_submission(str(submission_id))
         if submission is None:
             raise KeyError(f"unknown submission: {submission_id}")
-        if not self.store.accept_callback_event(event_id):
+        claim = self.store.claim_callback_event(event_id, submission_id=str(submission_id), payload=payload)
+        if claim != "claimed":
             return {"status": "duplicate", "event_id": event_id, "submission_id": submission_id}
-        visible = bool((self.store.get_contest(submission.contest_id).metadata if submission.contest_id and self.store.get_contest(submission.contest_id) else {}).get("leaderboard_visible", False))
-        self.record_result(submission, payload, visible=visible)
-        self.store.update_submission_result(submission.submission_id, payload)
+        contest = self.store.get_contest(submission.contest_id) if submission.contest_id else None
+        visible = bool((contest.metadata if contest else {}).get("leaderboard_visible", False))
+        entry = self._result_entry(submission, payload, visible=visible)
+        try:
+            # SQLite installations get one transaction for the receipt,
+            # submission projection, leaderboard row, and audit history.  A
+            # custom adapter can use its own transaction and then acknowledge
+            # the receipt only after its projection has committed.
+            if entry is not None and self.leaderboard is self.store:
+                self.store.apply_callback_projection(event_id=event_id, submission=submission, payload=payload, entry=entry)
+            else:
+                self.record_result(submission, payload, visible=visible)
+                self.store.update_submission_result(submission.submission_id, payload)
+                self.store.mark_callback_applied(event_id)
+        except Exception as exc:
+            self.store.mark_callback_failed(event_id, exc)
+            raise
         return {"status": payload.get("status", "received"), "event_id": event_id, "submission_id": submission_id}
 
     def record_result(self, submission: Submission, result: dict[str, Any], *, visible: bool = False) -> LeaderboardEntry | None:
         """Project a judge result into the platform-owned leaderboard."""
+        entry = self._result_entry(submission, result, visible=visible)
+        if entry is not None:
+            self.leaderboard.record(entry)
+        return entry
+
+    @staticmethod
+    def _result_entry(submission: Submission, result: dict[str, Any], *, visible: bool = False) -> LeaderboardEntry | None:
+        """Build a result projection without writing it to an adapter."""
         if not submission.contest_id:
             return None
-        entry = LeaderboardEntry(
+        return LeaderboardEntry(
             contestant_id=submission.contestant_id,
             contest_id=submission.contest_id,
             task_ref=submission.task_ref,
@@ -115,5 +138,3 @@ class PlatformApplication:
                 **{key: result[key] for key in ("task_digest", "evaluator", "runtime_image", "seed", "event_id") if key in result},
             },
         )
-        self.leaderboard.record(entry)
-        return entry

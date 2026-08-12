@@ -6,7 +6,8 @@ from pathlib import Path
 
 from brunost_platform.application import PlatformApplication
 from brunost_platform.identity import LocalIdentityAdapter
-from brunost_platform.models import Contest, Submission, User
+from brunost_platform.leaderboard_policy import project_leaderboard
+from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
 from brunost_platform.store import SQLitePlatformStore
 
 
@@ -58,3 +59,23 @@ def test_identity_session_and_callback_project_automatically(tmp_path: Path):
     assert app.handle_callback(body, headers, secret="secret")["status"] == "completed"
     assert app.handle_callback(body, headers, secret="secret")["status"] == "duplicate"
     assert store.list_leaderboard("c1")[0].score == 0.9
+
+
+def test_versioned_leaderboard_policy_aggregates_and_recovers_failed_callback(tmp_path: Path):
+    entries = [
+        LeaderboardEntry("a", "c1", "t1", 4, "a-1", True),
+        LeaderboardEntry("a", "c1", "t2", 6, "a-2", True),
+        LeaderboardEntry("b", "c1", "t1", 10, "b-1", True),
+    ]
+    projected = project_leaderboard(entries, {"leaderboard_policy": {"aggregation": "sum", "tie_policy": "dense", "visible": True}})
+    assert [(row.contestant_id, row.score, row.metadata["rank"]) for row in projected] == [("a", 10, 1), ("b", 10, 1)]
+
+    store = SQLitePlatformStore(tmp_path / "recovery.db")
+    store.save_user(User("u1", "u@example.test", "Student"))
+    store.create_contest(Contest("c1", "Final", ("t1",), metadata={"leaderboard_visible": True}))
+    submission = Submission("s1", "u1", "t1", str(tmp_path), "c1")
+    store.save_submission(submission)
+    body = {"status": "completed", "score": 1.0, "metadata": {"platform_submission_id": "s1"}}
+    assert store.claim_callback_event("event-1", submission_id="s1", payload=body) == "claimed"
+    store.mark_callback_failed("event-1", RuntimeError("projection interrupted"))
+    assert store.claim_callback_event("event-1", submission_id="s1", payload=body) == "claimed"

@@ -6,9 +6,11 @@ import json
 import secrets
 import sqlite3
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from brunost_platform.leaderboard_policy import project_leaderboard
 from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
 
 
@@ -49,7 +51,10 @@ class SQLitePlatformStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_leaderboard_contest ON leaderboard(contest_id, visible, score DESC);
                 CREATE TABLE IF NOT EXISTS callback_events (
-                    event_id TEXT PRIMARY KEY, received_at TEXT NOT NULL
+                    event_id TEXT PRIMARY KEY, received_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'applied', submission_id TEXT,
+                    payload_json TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL
@@ -68,6 +73,17 @@ class SQLitePlatformStore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
             if "password_hash" not in columns:
                 db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+            callback_columns = {row[1] for row in db.execute("PRAGMA table_info(callback_events)")}
+            for name, definition in (
+                ("status", "TEXT NOT NULL DEFAULT 'applied'"),
+                ("submission_id", "TEXT"),
+                ("payload_json", "TEXT"),
+                ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_error", "TEXT"),
+                ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+            ):
+                if name not in callback_columns:
+                    db.execute(f"ALTER TABLE callback_events ADD COLUMN {name} {definition}")
 
     def save_user(self, user: User) -> User:
         with self._connect() as db:
@@ -183,6 +199,8 @@ class SQLitePlatformStore:
         return Submission(row["submission_id"], row["contestant_id"], row["task_ref"], row["artifact_path"], row["contest_id"], json.loads(row["metadata_json"]))
 
     def record_leaderboard(self, entry: LeaderboardEntry) -> LeaderboardEntry:
+        metadata = {**entry.metadata, "recorded_at": datetime.now(UTC).isoformat()}
+        entry = LeaderboardEntry(entry.contestant_id, entry.contest_id, entry.task_ref, entry.score, entry.evaluation_id, entry.visible, metadata)
         with self._connect() as db:
             db.execute(
                 """INSERT INTO leaderboard(evaluation_id,contestant_id,contest_id,task_ref,score,visible,metadata_json)
@@ -200,15 +218,77 @@ class SQLitePlatformStore:
         self.record_leaderboard(entry)
 
     def accept_callback_event(self, event_id: str) -> bool:
-        """Atomically accept an event ID once; retries return ``False``."""
+        """Backward-compatible one-shot receipt insert for adapters."""
         if not event_id.strip():
             raise ValueError("event_id is required")
         with self._connect() as db:
             cursor = db.execute(
-                "INSERT INTO callback_events(event_id,received_at) VALUES(?,datetime('now')) ON CONFLICT(event_id) DO NOTHING",
+                "INSERT INTO callback_events(event_id,received_at,status,updated_at) VALUES(?,datetime('now'),'applied',datetime('now')) ON CONFLICT(event_id) DO NOTHING",
                 (event_id.strip(),),
             )
         return cursor.rowcount == 1
+
+    def claim_callback_event(self, event_id: str, *, submission_id: str, payload: dict[str, Any], stale_seconds: int = 900) -> str:
+        """Claim a callback for projection; failed/stale claims are recoverable."""
+        now = time.time()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status, updated_at FROM callback_events WHERE event_id=?", (event_id,)).fetchone()
+            if row is None:
+                db.execute(
+                    "INSERT INTO callback_events(event_id,received_at,status,submission_id,payload_json,attempts,updated_at) VALUES(?,datetime('now'),'applying',?,?,1,datetime('now'))",
+                    (event_id, submission_id, json.dumps(payload, sort_keys=True)),
+                )
+                return "claimed"
+            status = str(row["status"])
+            if status == "applied":
+                return "duplicate"
+            updated = row["updated_at"]
+            stale = False
+            if updated:
+                try:
+                    parsed = datetime.fromisoformat(str(updated))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    stale = now - parsed.timestamp() > stale_seconds
+                except ValueError:
+                    stale = True
+            if status == "applying" and not stale:
+                return "duplicate"
+            db.execute(
+                "UPDATE callback_events SET status='applying',submission_id=?,payload_json=?,attempts=attempts+1,last_error=NULL,updated_at=datetime('now') WHERE event_id=?",
+                (submission_id, json.dumps(payload, sort_keys=True), event_id),
+            )
+            return "claimed"
+
+    def mark_callback_applied(self, event_id: str) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE callback_events SET status='applied',last_error=NULL,updated_at=datetime('now') WHERE event_id=?", (event_id,))
+
+    def mark_callback_failed(self, event_id: str, exc: Exception) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE callback_events SET status='failed',last_error=?,updated_at=datetime('now') WHERE event_id=?", (str(exc)[:2000], event_id))
+
+    def apply_callback_projection(self, *, event_id: str, submission: Submission, payload: dict[str, Any], entry: LeaderboardEntry) -> None:
+        """Commit submission metadata, leaderboard row, audit history, and receipt together."""
+        metadata = {**entry.metadata, "recorded_at": datetime.now(UTC).isoformat()}
+        entry = LeaderboardEntry(entry.contestant_id, entry.contest_id, entry.task_ref, entry.score, entry.evaluation_id, entry.visible, metadata)
+        current = self.get_submission(submission.submission_id)
+        if current is None:
+            raise KeyError(f"unknown submission: {submission.submission_id}")
+        submission_metadata = {**current.metadata, "result": payload}
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE submissions SET metadata_json=? WHERE submission_id=?", (json.dumps(submission_metadata, sort_keys=True), submission.submission_id))
+            db.execute(
+                "INSERT INTO leaderboard(evaluation_id,contestant_id,contest_id,task_ref,score,visible,metadata_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(evaluation_id) DO UPDATE SET score=excluded.score,visible=excluded.visible,metadata_json=excluded.metadata_json",
+                (entry.evaluation_id, entry.contestant_id, entry.contest_id, entry.task_ref, entry.score, int(entry.visible), json.dumps(entry.metadata, sort_keys=True)),
+            )
+            db.execute(
+                "INSERT INTO leaderboard_history(revision_id,evaluation_id,contest_id,contestant_id,task_ref,score,recorded_at,payload_json) VALUES(?,?,?,?,?,?,datetime('now'),?)",
+                (secrets.token_hex(16), entry.evaluation_id, entry.contest_id, entry.contestant_id, entry.task_ref, entry.score, json.dumps(entry.as_dict(), sort_keys=True)),
+            )
+            db.execute("UPDATE callback_events SET status='applied',last_error=NULL,updated_at=datetime('now') WHERE event_id=?", (event_id,))
 
     def list_leaderboard(self, contest_id: str, *, visible_only: bool = True) -> list[LeaderboardEntry]:
         contest = self.get_contest(contest_id)
@@ -224,23 +304,7 @@ class SQLitePlatformStore:
             LeaderboardEntry(row["contestant_id"], row["contest_id"], row["task_ref"], row["score"], row["evaluation_id"], bool(row["visible"]), json.loads(row["metadata_json"]))
             for row in rows
         ]
-        if policy.get("best_attempt", False):
-            best: dict[tuple[str, str], LeaderboardEntry] = {}
-            for entry in entries:
-                key = (entry.contestant_id, entry.task_ref)
-                if key not in best or (entry.score is not None and (best[key].score is None or entry.score > best[key].score)):
-                    best[key] = entry
-            entries = list(best.values())
-        entries.sort(key=lambda entry: (entry.score is None, -(entry.score or 0), entry.contestant_id, entry.task_ref))
-        ranked: list[LeaderboardEntry] = []
-        last_score: float | None = None
-        last_rank = 0
-        for index, entry in enumerate(entries, start=1):
-            if entry.score != last_score:
-                last_rank = index
-                last_score = entry.score
-            ranked.append(LeaderboardEntry(entry.contestant_id, entry.contest_id, entry.task_ref, entry.score, entry.evaluation_id, entry.visible, {**entry.metadata, "rank": last_rank}))
-        return ranked
+        return project_leaderboard(entries, policy, visible_only=visible_only)
 
     def leaderboard_history(self, contest_id: str) -> list[dict[str, Any]]:
         with self._connect() as db:

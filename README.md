@@ -38,10 +38,12 @@ and replaceable identity, notification, and leaderboard adapters. Installations
 can start with SQLite and move to their preferred database or external LMS
 without changing the judge contract.
 
-Judge callbacks are verified with `verify_judge_callback()` and then accepted
-once with `SQLitePlatformStore.accept_callback_event(event_id)`. Use
-`PlatformApplication.handle_callback()` in a framework route to automatically
-update the submission and leaderboard projection.
+Judge callbacks are verified with `verify_judge_callback()` and processed by a
+durable receipt state machine (`applying` → `applied`, with failed claims
+retryable). Use `PlatformApplication.handle_callback()` in a framework route
+to transactionally update the submission, leaderboard projection, audit row,
+and receipt. `SQLitePlatformStore` applies the shared versioned leaderboard
+policy for visibility, freezes, aggregation, and deterministic ties.
 
 The Django package under `integrations/django-brunost` provides models,
 migrations, admin, callback routes, submissions, leaderboard projection, and a
@@ -57,3 +59,7 @@ frameworks can use the same dependency-free gateway and contracts.
 
 The kit intentionally keeps its core dependency-free. Install framework
 dependencies only in the generated application that needs them.
+
+Install `brunost-platform-kit[judge]` when you want the canonical
+`brunost-judge` SDK transport; otherwise the gateway uses its compatible
+standard-library HTTP fallback.

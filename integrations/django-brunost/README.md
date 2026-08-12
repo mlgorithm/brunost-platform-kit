@@ -13,8 +13,12 @@ python manage.py brunost_doctor
 
 Add `django_brunost` to `INSTALLED_APPS`, include `django_brunost.urls`, and
 configure `BRUNOST_JUDGE_URL`, `BRUNOST_JUDGE_API_TOKEN`, and
-`BRUNOST_JUDGE_CALLBACK_SECRET`. Use `submit_submission(...)` to upload a
-directory and create an evaluation; the callback endpoint verifies the signed
-event ID and optional `BRUNOST_PLATFORM_CALLBACK_TOKEN` before applying a
-result once. The leaderboard URL applies contest visibility and best-attempt
-policy.
+`BRUNOST_JUDGE_CALLBACK_SECRET`. Use `submit_submission(...)` to create a
+durable local submission and outbox row, then run
+`python manage.py brunost_dispatch_submissions` from a worker. The worker
+uploads the directory and submits an idempotent evaluation outside the local
+database transaction. The callback endpoint verifies the signed event ID and
+optional `BRUNOST_PLATFORM_CALLBACK_TOKEN`, then commits the submission,
+leaderboard projection, and receipt in one transaction. The leaderboard URL
+uses the shared versioned policy (`best_attempt`, `sum`, `average`, `max`, and
+standard/dense/ordinal ties).
