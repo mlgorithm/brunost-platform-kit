@@ -63,3 +63,7 @@ dependencies only in the generated application that needs them.
 Install `brunost-platform-kit[judge]` when you want the canonical
 `brunost-judge` SDK transport; otherwise the gateway uses its compatible
 standard-library HTTP fallback.
+
+For country-wide, no-code installation across control-plane and worker nodes,
+use the companion [`brunost-deploy`](https://github.com/mlgorithm/brunost-deploy)
+repository and its `brunostctl` CLI.
