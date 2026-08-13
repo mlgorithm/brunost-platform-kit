@@ -51,6 +51,8 @@ export BRUNOST_PLATFORM_CALLBACK_TOKEN=local-platform-callback-token
 export BRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback
 export BRUNOST_PLATFORM_DATABASE="$PWD/platform.db"
 export BRUNOST_SUBMISSION_ROOT="$PWD/submissions"
+export BRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org
+export BRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now
 
 uvicorn app.main:app --host 127.0.0.1 --port 3000
 ```
@@ -62,12 +64,19 @@ control room. The dashboard covers task packages, contests, workers,
 evaluations, agent/game definitions, and platform-owned counts. The API remains
 available at [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs).
 
-Create the first local operator account before signing in:
+The application creates a temporary administrator automatically when the
+database is empty. Sign in with `BRUNOST_DEFAULT_ADMIN_EMAIL` and
+`BRUNOST_DEFAULT_ADMIN_PASSWORD`; the first-run screen requires you to replace
+the temporary password before opening the dashboard. Set both values to unique
+secrets before a shared or production deployment.
+
+For an already-populated database, additional contestant accounts can still be
+created through the registration endpoint:
 
 ```bash
 curl -X POST http://127.0.0.1:3000/api/auth/register \
   -H 'content-type: application/json' \
-  -d '{"email":"admin@example.org","password":"change-this-password","display_name":"Country operator"}'
+  -d '{"email":"student@example.org","password":"change-this-password","display_name":"Contestant"}'
 ```
 
 The generated pages are intentionally replaceable: countries can keep the

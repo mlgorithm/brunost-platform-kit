@@ -35,6 +35,16 @@ platform = PlatformApplication(judge, store=store)
 identity = LocalIdentityAdapter(store)
 submission_root = Path(os.environ.get("BRUNOST_SUBMISSION_ROOT", "submissions")).expanduser().resolve()
 callback_url = os.environ.get("BRUNOST_PLATFORM_CALLBACK_URL", "http://127.0.0.1:3000/api/judge/callback")
+default_admin_email = os.environ.get("BRUNOST_DEFAULT_ADMIN_EMAIL", "admin@example.org").strip().lower()
+default_admin_password = os.environ.get("BRUNOST_DEFAULT_ADMIN_PASSWORD", "change-me-now")
+if not store.list_users():
+    identity.register(
+        email=default_admin_email,
+        password=default_admin_password,
+        display_name=os.environ.get("BRUNOST_DEFAULT_ADMIN_NAME", "Country operator"),
+        roles=("admin",),
+        metadata={"must_change_password": True, "bootstrap_account": True},
+    )
 
 
 class RegisterIn(BaseModel):
@@ -46,6 +56,11 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     email: str
     password: str
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=10)
 
 
 class ContestIn(BaseModel):
@@ -91,6 +106,15 @@ def login(request: LoginIn):
     if not token:
         raise HTTPException(status_code=401, detail="invalid credentials")
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/api/auth/change-password")
+def change_password(request: ChangePasswordIn, user=Depends(current_user)):
+    try:
+        updated = identity.change_password(user_id=user.user_id, current_password=request.current_password, new_password=request.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return updated.as_dict()
 
 
 @app.get("/api/me")
@@ -294,13 +318,19 @@ def _admin_page(title: str, content: str, *, user=None, active: str = "dashboard
 
 
 def _admin_user_or_redirect(request: Request):
-    token = request.cookies.get("brunost_session") or request.query_params.get("token")
-    user = store.get_session_user(token) if token else None
+    user = _browser_session_user(request)
     if user is None:
         return None, RedirectResponse("/login?next=" + quote(request.url.path), status_code=303)
+    if user.metadata.get("must_change_password"):
+        return None, RedirectResponse("/change-password?next=" + quote(request.url.path), status_code=303)
     if not set(user.roles).intersection({"admin", "organizer"}):
         return None, HTMLResponse(_admin_page("Access denied", "<div class='card notice error'>Organizer privileges are required for this area.</div>"), status_code=403)
     return user, None
+
+
+def _browser_session_user(request: Request):
+    token = request.cookies.get("brunost_session") or request.query_params.get("token")
+    return store.get_session_user(token) if token else None
 
 
 def _admin_judge_snapshot() -> dict:
@@ -326,7 +356,7 @@ def _admin_status(value: str) -> str:
 
 @app.get("/login", response_class=HTMLResponse)
 def browser_login(next: str = "/admin"):
-    content = "<div class='card form-card'><div class='page-head'><div><p class='eyebrow'>Operator access</p><h2>Sign in to Brunost</h2><p>Use the local platform account created through the API.</p></div></div><form class='stack' method='post' action='/login'><input type='hidden' name='next' value='" + _admin_escape(next) + "'><label>Email<input type='email' name='email' required autocomplete='email'></label><label>Password<input type='password' name='password' required autocomplete='current-password'></label><button class='button' type='submit'>Continue to dashboard</button></form><p class='hint'>For the first local installation, register the first account at <span class='mono'>POST /api/auth/register</span>; it becomes the administrator.</p></div>"
+    content = "<div class='card form-card'><div class='page-head'><div><p class='eyebrow'>Operator access</p><h2>Sign in to Brunost</h2><p>Use the bootstrap account from <span class='mono'>BRUNOST_DEFAULT_ADMIN_EMAIL</span> and <span class='mono'>BRUNOST_DEFAULT_ADMIN_PASSWORD</span>.</p></div></div><form class='stack' method='post' action='/login'><input type='hidden' name='next' value='" + _admin_escape(next) + "'><label>Email<input type='email' name='email' required autocomplete='email'></label><label>Password<input type='password' name='password' required autocomplete='current-password'></label><button class='button' type='submit'>Continue to dashboard</button></form><p class='hint'>The bootstrap password is temporary. You must replace it before using the control room.</p></div>"
     return _admin_page("Sign in", content)
 
 
@@ -336,9 +366,40 @@ def browser_login_submit(email: str = Form(...), password: str = Form(...), next
     if not token:
         content = "<div class='card form-card'><div class='notice error'>Invalid email or password.</div><p><a class='button secondary' href='/login'>Try again</a></p></div>"
         return HTMLResponse(_admin_page("Sign in", content), status_code=401)
-    response = RedirectResponse(next if next.startswith("/") else "/admin", status_code=303)
+    user = store.get_session_user(token)
+    destination = next if next.startswith("/") else "/admin"
+    if user and user.metadata.get("must_change_password"):
+        destination = "/change-password?next=" + quote(destination)
+    response = RedirectResponse(destination, status_code=303)
     response.set_cookie("brunost_session", token, httponly=True, samesite="lax", max_age=86400)
     return response
+
+
+@app.get("/change-password", response_class=HTMLResponse)
+def browser_change_password(request: Request, next: str = "/admin"):
+    user = _browser_session_user(request)
+    if user is None:
+        return RedirectResponse("/login?next=" + quote("/change-password"), status_code=303)
+    content = "<div class='card form-card'><div class='page-head'><div><p class='eyebrow'>First-run security</p><h2>Change your password</h2><p>The temporary bootstrap password must be replaced before continuing.</p></div></div><form class='stack' method='post' action='/change-password'><input type='hidden' name='next' value='" + _admin_escape(next) + "'><label>Current password<input type='password' name='current_password' required autocomplete='current-password'></label><label>New password<input type='password' name='new_password' minlength='10' required autocomplete='new-password'></label><label>Confirm new password<input type='password' name='confirm_password' minlength='10' required autocomplete='new-password'></label><button class='button' type='submit'>Save new password</button></form><p class='hint'>Use at least 10 characters. Store the new password in your country operator password manager.</p></div>"
+    return _admin_page("Change password", content, user=user)
+
+
+@app.post("/change-password", response_class=HTMLResponse)
+def browser_change_password_submit(request: Request, current_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), next: str = Form("/admin")):
+    user = _browser_session_user(request)
+    if user is None:
+        return RedirectResponse("/login?next=" + quote("/change-password"), status_code=303)
+    if new_password != confirm_password:
+        detail = "The new password and confirmation do not match."
+    else:
+        try:
+            identity.change_password(user_id=user.user_id, current_password=current_password, new_password=new_password)
+            destination = next if next.startswith("/") else "/admin"
+            return RedirectResponse(destination, status_code=303)
+        except ValueError as exc:
+            detail = str(exc)
+    content = "<div class='card form-card'><div class='notice error'>" + _admin_escape(detail) + "</div><p><a class='button secondary' href='/change-password'>Try again</a></p></div>"
+    return HTMLResponse(_admin_page("Change password", content, user=user), status_code=422)
 
 
 @app.get("/logout")
@@ -520,8 +581,8 @@ def admin_game_create(request: Request, game_id: str = Form(...), name: str = Fo
 
 def _python_files(project_name: str) -> dict[str, str]:
     return {
-        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login and use\n/admin for the operator dashboard. It includes task packages, contests,\nworkers, evaluations, agent/game definitions, and the platform JSON API.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
-        ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=\nBRUNOST_JUDGE_IMAGE=ghcr.io/mlgorithm/brunost-judge@sha256:<64-hex-digest>\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\n",
+        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nexport BRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nexport BRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login with\nthe default admin credentials and immediately change the password. Use /admin\nfor the operator dashboard. It includes task packages, contests, workers,\nevaluations, agent/game definitions, and the platform JSON API.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
+        ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=\nBRUNOST_JUDGE_IMAGE=ghcr.io/mlgorithm/brunost-judge@sha256:<64-hex-digest>\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\nBRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nBRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nBRUNOST_DEFAULT_ADMIN_NAME=Country operator\n",
         "pyproject.toml": """[project]\nname = \"brunost-platform-app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi>=0.115,<1\", \"uvicorn[standard]>=0.30,<1\", \"python-multipart>=0.0.9,<1\", \"brunost-platform-kit>=0.1\"]\n\n[build-system]\nrequires = [\"setuptools>=68\"]\nbuild-backend = \"setuptools.build_meta\"\n""",
         "Dockerfile": """FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install --no-cache-dir .\nEXPOSE 3000\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"3000\"]\n""",
         "docker-compose.yml": """services:\n  platform:\n    build: .\n    ports: [\"3000:3000\"]\n    environment:\n      BRUNOST_JUDGE_URL: http://judge:8787\n      BRUNOST_PLATFORM_CALLBACK_URL: http://platform:3000/api/judge/callback\n      BRUNOST_PLATFORM_CALLBACK_TOKEN: ${BRUNOST_PLATFORM_CALLBACK_TOKEN:?set a callback bearer token}\n      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n    depends_on: [judge]\n  judge:\n    image: ${BRUNOST_JUDGE_IMAGE:?set BRUNOST_JUDGE_IMAGE to a digest-pinned image}\n    command: [\"brunost\", \"server\", \"--host\", \"0.0.0.0\", \"--port\", \"8787\"]\n    environment:\n      BRUNOST_JUDGE_CALLBACK_SIGNING_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_JUDGE_CALLBACK_HOSTS: platform\n    ports: [\"8787:8787\"]\n""",

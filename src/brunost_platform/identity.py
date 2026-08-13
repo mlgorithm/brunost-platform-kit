@@ -27,14 +27,41 @@ class LocalIdentityAdapter:
     def provision(self, user: User) -> User:
         return self.store.save_user(user)
 
-    def register(self, *, email: str, password: str, display_name: str, roles: tuple[str, ...] = ("contestant",)) -> User:
+    def register(
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: str,
+        roles: tuple[str, ...] = ("contestant",),
+        metadata: dict[str, Any] | None = None,
+    ) -> User:
         if len(password) < 10:
             raise ValueError("password must contain at least 10 characters")
         normalized = email.strip().lower()
         if not normalized or "@" not in normalized:
             raise ValueError("a valid email address is required")
-        user = User(str(uuid.uuid4()), normalized, display_name.strip(), roles=roles, password_hash=self.hash_password(password))
+        user = User(str(uuid.uuid4()), normalized, display_name.strip(), roles=roles, metadata=metadata or {}, password_hash=self.hash_password(password))
         return self.store.save_user(user)
+
+    def change_password(self, *, user_id: str, current_password: str, new_password: str) -> User:
+        """Change a local password and clear any first-login password flag."""
+        if len(new_password) < 10:
+            raise ValueError("password must contain at least 10 characters")
+        user = self.store.get_user(user_id)
+        if user is None or not user.password_hash or not self.verify_password(current_password, user.password_hash):
+            raise ValueError("current password is incorrect")
+        metadata = {**user.metadata, "must_change_password": False}
+        updated = User(
+            user.user_id,
+            user.email,
+            user.display_name,
+            user.organization_id,
+            user.roles,
+            metadata,
+            self.hash_password(new_password),
+        )
+        return self.store.save_user(updated)
 
     def authenticate(self, *, email: str, password: str) -> str | None:
         user = self.store.get_user_by_email(email)
