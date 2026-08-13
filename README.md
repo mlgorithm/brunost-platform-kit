@@ -55,11 +55,24 @@ export BRUNOST_SUBMISSION_ROOT="$PWD/submissions"
 uvicorn app.main:app --host 127.0.0.1 --port 3000
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000) for the reference pages
-and [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs) for the API.
-The starter exposes JSON authentication and submission endpoints; its HTML
-pages are intentionally small so countries can replace them with their own
-frontend while keeping the same Platform Kit/Judge boundary.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000) for the reference landing
+page, [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login) to sign in, and
+[http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) for the operator
+control room. The dashboard covers task packages, contests, workers,
+evaluations, agent/game definitions, and platform-owned counts. The API remains
+available at [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs).
+
+Create the first local operator account before signing in:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"admin@example.org","password":"change-this-password","display_name":"Country operator"}'
+```
+
+The generated pages are intentionally replaceable: countries can keep the
+FastAPI routes, mount a separate frontend, or build another UI against the
+same Platform Kit/Judge boundary.
 
 For a published package, install `brunost-platform-kit` from its release
 instead of the editable source path. The generated application still needs a

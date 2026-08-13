@@ -1,3 +1,4 @@
+import py_compile
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ def test_templates_are_complete(tmp_path: Path):
     for template in ("python-fastapi", "node-fastify", "minimal"):
         create_project(tmp_path / template, template=template)
         assert (tmp_path / template / "README.md").is_file()
+    py_compile.compile(str(tmp_path / "python-fastapi" / "app" / "main.py"), doraise=True)
     assert (tmp_path / "python-fastapi" / "docker-compose.yml").is_file()
     assert "src/server.ts" in template_files("node-fastify", "demo")
 

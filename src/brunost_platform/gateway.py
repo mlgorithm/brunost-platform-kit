@@ -25,6 +25,24 @@ class JudgeGatewayError(RuntimeError):
 class JudgeGateway(Protocol):
     def health(self) -> dict[str, Any]: ...
 
+    def stats(self) -> dict[str, Any]: ...
+
+    def list_tasks(self) -> list[dict[str, Any]]: ...
+
+    def register_task(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def list_workers(self) -> list[dict[str, Any]]: ...
+
+    def list_executions(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]: ...
+
+    def list_agents(self) -> list[dict[str, Any]]: ...
+
+    def list_games(self) -> list[dict[str, Any]]: ...
+
+    def register_agent(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def register_game(self, **kwargs: Any) -> dict[str, Any]: ...
+
     def upload_artifact(self, path: str | Path) -> dict[str, Any]: ...
 
     def submit_evaluation(
@@ -95,6 +113,36 @@ class HttpJudgeGateway:
         if self._sdk_client is not None:
             return self._sdk_client.health()
         return self._request("GET", "/healthz")
+
+    def stats(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/stats")
+
+    def list_tasks(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/tasks")  # type: ignore[return-value]
+
+    def register_task(self, **kwargs: Any) -> dict[str, Any]:
+        return self._request("POST", "/v1/tasks", kwargs)
+
+    def list_workers(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/workers")  # type: ignore[return-value]
+
+    def list_executions(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        query = f"?limit={max(1, min(limit, 500))}"
+        if status:
+            query += f"&status={status}"
+        return self._request("GET", f"/v1/executions{query}")  # type: ignore[return-value]
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/agents")  # type: ignore[return-value]
+
+    def list_games(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/games")  # type: ignore[return-value]
+
+    def register_agent(self, **kwargs: Any) -> dict[str, Any]:
+        return self._request("POST", "/v1/agents", kwargs)
+
+    def register_game(self, **kwargs: Any) -> dict[str, Any]:
+        return self._request("POST", "/v1/games", kwargs)
 
     def _raw(self, method: str, path: str, data: bytes) -> bytes:
         headers = {"Accept": "application/octet-stream", "Content-Type": "application/gzip"}

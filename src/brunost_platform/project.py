@@ -158,9 +158,25 @@ def leaderboard(contest_id: str):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """<!doctype html><title>Brunost Platform</title><h1>Brunost Platform</h1>
-    <p>Platform-owned identity, contests, submissions, and leaderboard projections.</p>
-    <p><a href='/contests'>Browse contests</a> · <a href='/profile'>Profile</a></p>"""
+    return """<!doctype html>
+    <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Brunost Platform</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; min-height: 100vh; background: #0b1020; color: #eef2ff; }
+      main { max-width: 920px; margin: 0 auto; padding: 12vh 28px; }
+      .eyebrow { color: #a5b4fc; font-size: .78rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+      h1 { margin: 14px 0; font-size: clamp(2.6rem, 7vw, 5.5rem); letter-spacing: -.06em; line-height: .95; }
+      p { max-width: 650px; color: #a9b5d6; font-size: 1.08rem; line-height: 1.7; }
+      nav { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+      a { display: inline-flex; align-items: center; border-radius: 12px; padding: 12px 16px; background: #6366f1; color: white; font-weight: 700; text-decoration: none; }
+      a.secondary { background: #17213c; color: #dbe4ff; }
+    </style></head><body><main>
+      <div class="eyebrow">Brunost competition platform</div>
+      <h1>Run better contests.</h1>
+      <p>Manage people, contests, tasks, submissions, workers, evaluations, and leaderboards from one platform. The Judge remains an independent execution service behind the control room.</p>
+      <nav><a href="/admin">Open admin control room</a><a class="secondary" href="/contests">Browse contests</a><a class="secondary" href="/login">Sign in</a></nav>
+    </main></body></html>"""
 
 
 @app.get("/contests", response_class=HTMLResponse)
@@ -185,9 +201,326 @@ def profile_page():
 '''
 
 
+def _admin_ui_appendix() -> str:
+    """Return the operator dashboard added to generated FastAPI projects."""
+    return r'''
+
+
+# ---------------------------------------------------------------------------
+# Operator UI
+# ---------------------------------------------------------------------------
+# The dashboard is intentionally generated into the application so a country
+# can start with one command and later replace these pages with React, Vue, or
+# its own server-rendered frontend. The Judge remains the source of truth for
+# execution, workers, tasks, and evaluation state.
+import html
+from urllib.parse import quote
+
+from fastapi.responses import RedirectResponse
+
+
+ADMIN_CSS = """
+:root { --ink:#172033; --muted:#6b7890; --line:#e5eaf2; --surface:#fff; --wash:#f5f7fb; --brand:#5b5ce2; --brand-dark:#4547bd; --good:#16845b; --warn:#b86b00; --bad:#c43d52; }
+* { box-sizing:border-box; }
+body { margin:0; color:var(--ink); background:var(--wash); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+a { color:inherit; text-decoration:none; }
+.shell { display:flex; min-height:100vh; }
+.sidebar { width:252px; padding:28px 18px; color:#dce3ff; background:#171a31; position:fixed; inset:0 auto 0 0; }
+.brand { display:flex; align-items:center; gap:11px; margin:0 10px 36px; font-weight:800; letter-spacing:-.03em; color:#fff; font-size:20px; }
+.brand-mark { display:grid; place-items:center; width:34px; height:34px; border-radius:11px; color:#fff; background:linear-gradient(135deg,#7e80ff,#4d50d4); }
+.nav-label { margin:24px 11px 8px; color:#7e88aa; text-transform:uppercase; font-size:10px; font-weight:800; letter-spacing:.14em; }
+.nav a { display:flex; gap:12px; align-items:center; padding:11px 12px; border-radius:10px; color:#aeb8d8; font-size:14px; }
+.nav a:hover,.nav a.active { color:#fff; background:#292e50; }
+.sidebar-foot { position:absolute; right:18px; bottom:24px; left:18px; padding:13px; border:1px solid #303758; border-radius:12px; color:#9ca8ca; font-size:12px; }
+.main { width:calc(100% - 252px); margin-left:252px; padding:34px 42px 60px; }
+.topbar { display:flex; justify-content:space-between; gap:20px; align-items:center; margin-bottom:30px; }
+.topbar h1 { margin:0; font-size:30px; letter-spacing:-.045em; }
+.topbar p { margin:6px 0 0; color:var(--muted); font-size:14px; }
+.user-chip { display:flex; align-items:center; gap:10px; padding:8px 12px 8px 8px; border:1px solid var(--line); border-radius:999px; background:var(--surface); font-size:13px; }
+.avatar { display:grid; place-items:center; width:30px; height:30px; border-radius:50%; color:#fff; background:var(--brand); font-weight:800; }
+.grid { display:grid; gap:18px; }
+.grid.four { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.card { padding:22px; border:1px solid var(--line); border-radius:16px; background:var(--surface); box-shadow:0 5px 20px rgba(31,43,76,.035); }
+.metric-label { color:var(--muted); font-size:12px; font-weight:700; }
+.metric { margin-top:8px; font-size:30px; font-weight:800; letter-spacing:-.05em; }
+.metric-note { margin-top:6px; color:var(--muted); font-size:12px; }
+.section { margin-top:22px; }
+.section-head,.page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:14px; }
+.section-head h2,.page-head h2 { margin:0; font-size:18px; letter-spacing:-.025em; }
+.section-head p,.page-head p { margin:5px 0 0; color:var(--muted); font-size:13px; }
+.eyebrow { margin:0 0 7px !important; color:var(--brand) !important; font-size:11px !important; text-transform:uppercase; letter-spacing:.14em; font-weight:800; }
+.button { display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:10px 14px; border:0; border-radius:9px; color:#fff; background:var(--brand); cursor:pointer; font:inherit; font-size:13px; font-weight:750; }
+.button:hover { background:var(--brand-dark); }
+.button.secondary { color:var(--ink); background:#edf0f7; }
+.button.danger { background:#fff0f2; color:var(--bad); }
+.button.small { padding:7px 10px; font-size:12px; }
+.table-wrap { overflow:auto; border:1px solid var(--line); border-radius:13px; background:var(--surface); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { padding:12px 16px; color:var(--muted); background:#fafbfe; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+td { padding:14px 16px; border-top:1px solid var(--line); vertical-align:middle; }
+tr:hover td { background:#fcfcff; }
+.pill { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border-radius:999px; color:var(--muted); background:#eef1f6; font-size:11px; font-weight:750; }
+.pill.good { color:var(--good); background:#eaf8f1; }
+.pill.warn { color:var(--warn); background:#fff4df; }
+.pill.bad { color:var(--bad); background:#ffedf0; }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+.empty { padding:32px; color:var(--muted); text-align:center; }
+.form-card { max-width:800px; }
+form.stack { display:grid; gap:14px; }
+.form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:700; }
+input,select,textarea { width:100%; padding:11px 12px; border:1px solid #dce2ed; border-radius:9px; outline:none; color:var(--ink); background:#fff; font:inherit; font-size:13px; }
+input:focus,select:focus,textarea:focus { border-color:var(--brand); box-shadow:0 0 0 3px #e9e9ff; }
+.hint { color:var(--muted); font-size:12px; line-height:1.55; }
+.notice { padding:12px 14px; border-radius:10px; color:#31506d; background:#edf7ff; font-size:13px; }
+.notice.error { color:#8e2939; background:#ffedf0; }
+.health-dot { display:inline-block; width:8px; height:8px; margin-right:6px; border-radius:50%; background:var(--good); }
+@media (max-width:1000px) { .grid.four { grid-template-columns:repeat(2,minmax(0,1fr)); } .sidebar { width:210px; } .main { width:calc(100% - 210px); margin-left:210px; padding:26px; } }
+@media (max-width:700px) { .sidebar { position:static; width:100%; min-height:auto; } .sidebar-foot { position:static; margin-top:20px; } .shell { display:block; } .main { width:100%; margin:0; padding:22px 16px 40px; } .grid.four,.grid.two,.form-grid { grid-template-columns:1fr; } .topbar,.section-head,.page-head { align-items:flex-start; flex-direction:column; } }
+"""
+
+
+def _admin_escape(value) -> str:
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def _admin_page(title: str, content: str, *, user=None, active: str = "dashboard") -> str:
+    links = [("dashboard", "◈", "Overview", "/admin"), ("tasks", "▣", "Tasks", "/admin/tasks"), ("contests", "◇", "Contests", "/admin/contests"), ("evaluations", "◌", "Evaluations", "/admin/evaluations"), ("workers", "♢", "Workers", "/admin/workers"), ("definitions", "⌘", "Agents & games", "/admin/definitions")]
+    nav = "".join(f'<a class="{("active" if key == active else "")}" href="{href}"><span>{icon}</span>{label}</a>' for key, icon, label, href in links)
+    name = _admin_escape(getattr(user, "display_name", "Operator"))
+    initial = _admin_escape((getattr(user, "display_name", "O") or "O")[:1].upper())
+    return "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + _admin_escape(title) + " · Brunost" + "</title><style>" + ADMIN_CSS + "</style></head><body><div class='shell'><aside class='sidebar'><a class='brand' href='/admin'><span class='brand-mark'>B</span>Brunost <span style='font-weight:500;color:#8490b4'>control</span></a><div class='nav-label'>Operations</div><nav class='nav'>" + nav + "</nav><div class='sidebar-foot'>Judge-backed platform<br><span style='color:#6ed6a7'>●</span> control plane connected through API</div></aside><main class='main'><div class='topbar'><div><h1>" + _admin_escape(title) + "</h1><p>Competition operations, task authoring, and evaluation control.</p></div><div class='user-chip'><span class='avatar'>" + initial + "</span><span>" + name + "</span><a class='button secondary small' href='/logout'>Sign out</a></div></div>" + content + "</main></div></body></html>"
+
+
+def _admin_user_or_redirect(request: Request):
+    token = request.cookies.get("brunost_session") or request.query_params.get("token")
+    user = store.get_session_user(token) if token else None
+    if user is None:
+        return None, RedirectResponse("/login?next=" + quote(request.url.path), status_code=303)
+    if not set(user.roles).intersection({"admin", "organizer"}):
+        return None, HTMLResponse(_admin_page("Access denied", "<div class='card notice error'>Organizer privileges are required for this area.</div>"), status_code=403)
+    return user, None
+
+
+def _admin_judge_snapshot() -> dict:
+    snapshot = {}
+    for key, method, default in (("health", "health", {}), ("stats", "stats", {}), ("tasks", "list_tasks", []), ("workers", "list_workers", []), ("executions", "list_executions", []), ("agents", "list_agents", []), ("games", "list_games", [])):
+        try:
+            snapshot[key] = getattr(judge, method)()
+        except Exception as exc:  # noqa: BLE001 - dashboard should show degraded dependencies
+            snapshot[key] = default
+            snapshot.setdefault("errors", []).append(f"{key}: {exc}")
+    return snapshot
+
+
+def _admin_stat(label: str, value, note: str) -> str:
+    return "<div class='card'><div class='metric-label'>" + _admin_escape(label) + "</div><div class='metric'>" + _admin_escape(value) + "</div><div class='metric-note'>" + _admin_escape(note) + "</div></div>"
+
+
+def _admin_status(value: str) -> str:
+    normalized = str(value).lower()
+    kind = "good" if normalized in {"ok", "ready", "running", "completed", "healthy"} else "warn" if normalized in {"queued", "busy", "pending"} else "bad" if normalized in {"failed", "error", "offline", "cancelled"} else ""
+    return f"<span class='pill {kind}'>{_admin_escape(value)}</span>"
+
+
+@app.get("/login", response_class=HTMLResponse)
+def browser_login(next: str = "/admin"):
+    content = "<div class='card form-card'><div class='page-head'><div><p class='eyebrow'>Operator access</p><h2>Sign in to Brunost</h2><p>Use the local platform account created through the API.</p></div></div><form class='stack' method='post' action='/login'><input type='hidden' name='next' value='" + _admin_escape(next) + "'><label>Email<input type='email' name='email' required autocomplete='email'></label><label>Password<input type='password' name='password' required autocomplete='current-password'></label><button class='button' type='submit'>Continue to dashboard</button></form><p class='hint'>For the first local installation, register the first account at <span class='mono'>POST /api/auth/register</span>; it becomes the administrator.</p></div>"
+    return _admin_page("Sign in", content)
+
+
+@app.post("/login", response_class=HTMLResponse)
+def browser_login_submit(email: str = Form(...), password: str = Form(...), next: str = Form("/admin")):
+    token = identity.authenticate(email=email, password=password)
+    if not token:
+        content = "<div class='card form-card'><div class='notice error'>Invalid email or password.</div><p><a class='button secondary' href='/login'>Try again</a></p></div>"
+        return HTMLResponse(_admin_page("Sign in", content), status_code=401)
+    response = RedirectResponse(next if next.startswith("/") else "/admin", status_code=303)
+    response.set_cookie("brunost_session", token, httponly=True, samesite="lax", max_age=86400)
+    return response
+
+
+@app.get("/logout")
+def browser_logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie("brunost_session")
+    return response
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    data = _admin_judge_snapshot()
+    stats = data.get("stats") or {}
+    workers = data.get("workers") or []
+    executions = data.get("executions") or []
+    contests = store.list_contests()
+    users = store.list_users()
+    ready = sum(1 for worker in workers if worker.get("status") in {"ready", "busy"} and not worker.get("draining"))
+    active = sum(1 for item in executions if item.get("status") in {"queued", "running"})
+    health = data.get("health") or {}
+    cards = "<div class='grid four'>" + _admin_stat("Judge status", "Online" if health.get("status") == "ok" else "Degraded", "control plane") + _admin_stat("Tasks", len(data.get("tasks") or []), "registered task packages") + _admin_stat("Workers", f"{ready}/{len(workers)}", "ready workers") + _admin_stat("Active evaluations", active, "queued or running") + "</div>"
+    worker_rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td></tr>" for item in workers[:8]) or "<tr><td colspan='4' class='empty'>No workers enrolled yet.</td></tr>"
+    evaluation_rows = "".join("<tr><td class='mono'>" + _admin_escape(str(item.get("execution_id", ""))[:12]) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_status(item.get("status", "unknown")) + "</td><td>" + _admin_escape(item.get("score") if item.get("score") is not None else "—") + "</td></tr>" for item in executions[:8]) or "<tr><td colspan='4' class='empty'>No evaluations yet.</td></tr>"
+    content = cards + "<div class='grid two section'><section><div class='section-head'><div><h2>Worker fleet</h2><p>Live capacity reported by the Judge.</p></div><a class='button secondary small' href='/admin/workers'>View all</a></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Resources</th><th>Region</th></tr></thead><tbody>" + worker_rows + "</tbody></table></div></section><section><div class='section-head'><div><h2>Recent evaluations</h2><p>Execution state from the Judge.</p></div><a class='button secondary small' href='/admin/evaluations'>View all</a></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Score</th></tr></thead><tbody>" + evaluation_rows + "</tbody></table></div></section></div>"
+    content += "<div class='grid two section'><section class='card'><div class='section-head'><div><h2>Platform</h2><p>Owned by this application.</p></div></div><div class='grid two'><div><div class='metric-label'>Users</div><div class='metric'>" + str(len(users)) + "</div></div><div><div class='metric-label'>Contests</div><div class='metric'>" + str(len(contests)) + "</div></div></div></section><section class='card'><div class='section-head'><div><h2>Quick actions</h2><p>Common operator workflows.</p></div></div><p><a class='button' href='/admin/tasks/new'>Register a task</a> <a class='button secondary' href='/admin/contests/new'>Create a contest</a></p><p class='hint'>Task packages and execution state remain Judge-owned; contests and leaderboard policy remain Platform-owned.</p></section></div>"
+    return _admin_page("Operations overview", content, user=user, active="dashboard")
+
+
+@app.get("/admin/tasks", response_class=HTMLResponse)
+def admin_tasks(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    tasks = _admin_judge_snapshot().get("tasks") or []
+    rows = "".join("<tr><td><strong>" + _admin_escape(item.get("task_ref")) + "</strong><div class='hint'>" + _admin_escape(item.get("path")) + "</div></td><td>" + _admin_status(item.get("kind", "unknown")) + "</td><td class='mono'>" + _admin_escape(str((item.get("manifest") or {}).get("digest", "—"))[:16]) + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("runtime", "—")) + "</td></tr>" for item in tasks) or "<tr><td colspan='4' class='empty'>No task packages registered.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable IOI, ICPC, IOAI, agent, and game task definitions.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Task reference</th><th>Kind</th><th>Digest</th><th>Runtime</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+    return _admin_page("Tasks", content, user=user, active="tasks")
+
+
+@app.get("/admin/tasks/new", response_class=HTMLResponse)
+def admin_task_form(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    kinds = "".join(f"<option value='{kind}'>{kind.upper()}</option>" for kind in ("ioai", "ioi", "icpc", "interactive", "model", "agent", "game", "output-only"))
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Register a task</h2><p>Use an artifact ID for a distributed deployment, or a local path for development.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/tasks'><div class='form-grid'><label>Task reference<input name='task_ref' placeholder='national-2026/forecast-v1' required></label><label>Task kind<select name='kind'>" + kinds + "</select></label></div><label>Immutable artifact ID<input name='artifact_id' placeholder='64-character content hash'></label><label>Local task path<input name='path' placeholder='/srv/tasks/forecast-v1'></label><div class='notice'>Provide exactly one of artifact ID or local path. Artifact IDs are the portable production option.</div><button class='button' type='submit'>Register task with Judge</button></form></div>"
+    return _admin_page("Register task", content, user=user, active="tasks")
+
+
+@app.post("/admin/tasks", response_class=HTMLResponse)
+def admin_task_create(request: Request, task_ref: str = Form(...), kind: str = Form("ioai"), artifact_id: str = Form(""), path: str = Form("")):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    if bool(artifact_id.strip()) == bool(path.strip()):
+        content = "<div class='card notice error'>Provide exactly one artifact ID or local task path.</div><p><a class='button secondary' href='/admin/tasks/new'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Register task", content, user=user, active="tasks"), status_code=422)
+    payload = {"task_ref": task_ref.strip(), "kind": kind.strip()}
+    payload["artifact_id" if artifact_id.strip() else "path"] = (artifact_id if artifact_id.strip() else path).strip()
+    try:
+        judge.register_task(**payload)
+    except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
+        content = "<div class='card notice error'>Task registration failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/tasks/new'>Try again</a></p>"
+        return HTMLResponse(_admin_page("Register task", content, user=user, active="tasks"), status_code=400)
+    return RedirectResponse("/admin/tasks", status_code=303)
+
+
+@app.get("/admin/contests", response_class=HTMLResponse)
+def admin_contests(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    contests = store.list_contests()
+    rows = "".join("<tr><td><strong>" + _admin_escape(contest.contest_id) + "</strong></td><td>" + _admin_escape(contest.name) + "</td><td>" + _admin_escape(len(contest.task_refs)) + " tasks</td><td>" + _admin_status(contest.status) + "</td><td>" + ("Public" if contest.metadata.get("leaderboard_visible") else "Hidden") + "</td></tr>" for contest in contests) or "<tr><td colspan='5' class='empty'>No contests created.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Contests</h2><p>Define contest identity, task selection, and leaderboard visibility.</p></div><a class='button' href='/admin/contests/new'>Create contest</a></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Name</th><th>Tasks</th><th>Status</th><th>Leaderboard</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+    return _admin_page("Contests", content, user=user, active="contests")
+
+
+@app.get("/admin/contests/new", response_class=HTMLResponse)
+def admin_contest_form(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Contest policy belongs to the Platform; task execution belongs to the Judge.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><label>Task references<textarea name='task_refs' rows='3' placeholder='one task_ref per line or comma-separated'></textarea></label><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
+    return _admin_page("Create contest", content, user=user, active="contests")
+
+
+@app.post("/admin/contests", response_class=HTMLResponse)
+def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    refs = tuple(value.strip() for value in task_refs.replace(",", "\n").splitlines() if value.strip())
+    try:
+        platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}))
+    except Exception as exc:  # noqa: BLE001 - surface store validation in the UI
+        content = "<div class='card notice error'>Contest creation failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Try again</a></p>"
+        return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
+    return RedirectResponse("/admin/contests", status_code=303)
+
+
+@app.get("/admin/workers", response_class=HTMLResponse)
+def admin_workers(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    workers = _admin_judge_snapshot().get("workers") or []
+    rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong><div class='hint mono'>" + _admin_escape((item.get("metadata") or {}).get("hostname", "")) + "</div></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("queues") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("capabilities") or []) or "—") + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td></tr>" for item in workers) or "<tr><td colspan='6' class='empty'>No workers enrolled. Enroll nodes through brunostctl.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge fleet</p><h2>Workers</h2><p>Capacity, queues, capabilities, and health reported by the execution plane.</p></div><a class='button secondary' href='/admin'>Refresh overview</a></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Queues</th><th>Resources</th><th>Capabilities</th><th>Region</th></tr></thead><tbody>" + rows + "</tbody></table></div><div class='card section'><p class='hint'>Worker enrollment and credential rotation remain operator actions through <span class='mono'>brunostctl node</span>. This dashboard is intentionally read-only for worker security.</p></div>"
+    return _admin_page("Workers", content, user=user, active="workers")
+
+
+@app.get("/admin/evaluations", response_class=HTMLResponse)
+def admin_evaluations(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    executions = _admin_judge_snapshot().get("executions") or []
+    rows = "".join("<tr><td class='mono'>" + _admin_escape(item.get("execution_id")) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_status(item.get("status", "unknown")) + "</td><td>" + _admin_escape(item.get("queue", "default")) + "</td><td>" + _admin_escape(item.get("resource_class", "cpu")) + "</td><td>" + _admin_escape(item.get("score") if item.get("score") is not None else "—") + "</td><td>" + ("<form method='post' action='/admin/evaluations/" + quote(str(item.get("execution_id"))) + "/cancel'><button class='button danger small' type='submit'>Cancel</button></form>" if item.get("status") in {"queued", "running"} else "—") + "</td></tr>" for item in executions) or "<tr><td colspan='7' class='empty'>No evaluations yet.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge execution plane</p><h2>Evaluations</h2><p>Every submission, queue, resource class, score, and failure state.</p></div></div><div class='table-wrap'><table><thead><tr><th>Evaluation</th><th>Task</th><th>Status</th><th>Queue</th><th>Resource</th><th>Score</th><th>Action</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+    return _admin_page("Evaluations", content, user=user, active="evaluations")
+
+
+@app.post("/admin/evaluations/{evaluation_id}/cancel")
+def admin_cancel_evaluation(request: Request, evaluation_id: str):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    try:
+        judge.cancel(evaluation_id)
+    except Exception:
+        pass
+    return RedirectResponse("/admin/evaluations", status_code=303)
+
+
+@app.get("/admin/definitions", response_class=HTMLResponse)
+def admin_definitions(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    data = _admin_judge_snapshot()
+    agents = data.get("agents") or []
+    games = data.get("games") or []
+    agent_rows = "".join("<tr><td>" + _admin_escape(item.get("agent_id")) + "</td><td>" + _admin_escape(item.get("name")) + "</td><td>" + _admin_escape(item.get("protocol", "stdio")) + "</td><td>" + _admin_status("definition") + "</td></tr>" for item in agents) or "<tr><td colspan='4' class='empty'>No agents registered.</td></tr>"
+    game_rows = "".join("<tr><td>" + _admin_escape(item.get("game_id")) + "</td><td>" + _admin_escape(item.get("name")) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_escape(item.get("seats", "—")) + "</td></tr>" for item in games) or "<tr><td colspan='4' class='empty'>No games registered.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge extensions</p><h2>Agents & games</h2><p>Declare agent and match definitions. Actual execution requires the corresponding runner plugin.</p></div></div><div class='grid two'><section class='card'><h2>Register agent</h2><form class='stack' method='post' action='/admin/definitions/agents'><label>Agent ID<input name='agent_id' required placeholder='agent/model-v1'></label><label>Name<input name='name' required placeholder='Forecast agent'></label><label>Protocol<input name='protocol' value='stdio'></label><label>Required capabilities<input name='required_capabilities' placeholder='gpu, cuda'></label><button class='button' type='submit'>Register agent</button></form></section><section class='card'><h2>Register game</h2><form class='stack' method='post' action='/admin/definitions/games'><label>Game ID<input name='game_id' required placeholder='game/strategy-v1'></label><label>Name<input name='name' required placeholder='Strategy match'></label><label>Task reference<input name='task_ref' required placeholder='game/task-v1'></label><label>Seats<input name='seats' type='number' value='2' min='2' max='64'></label><button class='button' type='submit'>Register game</button></form></section></div><div class='grid two section'><section><div class='section-head'><h2>Registered agents</h2></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Name</th><th>Protocol</th><th>State</th></tr></thead><tbody>" + agent_rows + "</tbody></table></div></section><section><div class='section-head'><h2>Registered games</h2></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Name</th><th>Task</th><th>Seats</th></tr></thead><tbody>" + game_rows + "</tbody></table></div></section></div>"
+    return _admin_page("Agents & games", content, user=user, active="definitions")
+
+
+@app.post("/admin/definitions/agents")
+def admin_agent_create(request: Request, agent_id: str = Form(...), name: str = Form(...), protocol: str = Form("stdio"), required_capabilities: str = Form("")):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    try:
+        judge.register_agent(agent_id=agent_id.strip(), name=name.strip(), protocol=protocol.strip(), required_capabilities=[value.strip() for value in required_capabilities.split(",") if value.strip()])
+    except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
+        content = "<div class='card notice error'>Agent registration failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/definitions'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Agents & games", content, user=user, active="definitions"), status_code=400)
+    return RedirectResponse("/admin/definitions", status_code=303)
+
+
+@app.post("/admin/definitions/games")
+def admin_game_create(request: Request, game_id: str = Form(...), name: str = Form(...), task_ref: str = Form(...), seats: int = Form(2)):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    try:
+        judge.register_game(game_id=game_id.strip(), name=name.strip(), task_ref=task_ref.strip(), seats=seats)
+    except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
+        content = "<div class='card notice error'>Game registration failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/definitions'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Agents & games", content, user=user, active="definitions"), status_code=400)
+    return RedirectResponse("/admin/definitions", status_code=303)
+'''
+
+
 def _python_files(project_name: str) -> dict[str, str]:
     return {
-        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000. The starter includes small HTML pages and JSON\nendpoints for identity, contests, submissions, callbacks, and leaderboards.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
+        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login and use\n/admin for the operator dashboard. It includes task packages, contests,\nworkers, evaluations, agent/game definitions, and the platform JSON API.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
         ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=\nBRUNOST_JUDGE_IMAGE=ghcr.io/mlgorithm/brunost-judge@sha256:<64-hex-digest>\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\n",
         "pyproject.toml": """[project]\nname = \"brunost-platform-app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi>=0.115,<1\", \"uvicorn[standard]>=0.30,<1\", \"python-multipart>=0.0.9,<1\", \"brunost-platform-kit>=0.1\"]\n\n[build-system]\nrequires = [\"setuptools>=68\"]\nbuild-backend = \"setuptools.build_meta\"\n""",
         "Dockerfile": """FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install --no-cache-dir .\nEXPOSE 3000\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"3000\"]\n""",
@@ -241,6 +574,7 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         )
         files["app/main.py"] += """\n\nclass ContestIn(BaseModel):\n    contest_id: str = Field(min_length=1)\n    name: str = Field(min_length=1)\n    task_refs: list[str] = Field(default_factory=list)\n\n\n@app.post(\"/api/contests\", status_code=201)\ndef create_contest(request: ContestIn):\n    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs))).as_dict()\n\n\n@app.get(\"/api/contests\")\ndef list_contests():\n    return [contest.as_dict() for contest in store.list_contests()]\n"""
         files["app/main.py"] = _reference_fastapi_main()
+        files["app/main.py"] += _admin_ui_appendix()
         return files
     if template == "node-fastify":
         files = _node_files(project_name)
