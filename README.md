@@ -21,6 +21,50 @@ brunost-platform contest new contests/national-final --id national-final
 brunost-platform doctor
 ```
 
+## Run the reference FastAPI UI locally
+
+The generated FastAPI application is the maintained reference UI/API. It runs
+separately from the Judge and connects to it through `BRUNOST_JUDGE_URL`.
+
+First start a Judge API and at least one worker using the Judge's
+[`local-worker-smoke-test.md`](https://github.com/mlgorithm/brunost-judge/blob/main/docs/local-worker-smoke-test.md).
+When callbacks are enabled, set the Judge's
+`BRUNOST_JUDGE_CALLBACK_SIGNING_SECRET` to the same value used below for
+`BRUNOST_JUDGE_CALLBACK_SECRET`.
+Then create and run the platform application:
+
+```bash
+cd /Users/sam.urmian/Documents/github/brunost-platform-kit
+python3 -m venv .venv-platform
+source .venv-platform/bin/activate
+python -m pip install -e .
+python -m pip install -e /Users/sam.urmian/Documents/github/brunost-judge
+
+brunost-platform init /tmp/brunost-ui --template python-fastapi
+cd /tmp/brunost-ui
+python -m pip install -e .
+
+export BRUNOST_JUDGE_URL=http://127.0.0.1:8799
+export BRUNOST_JUDGE_API_TOKEN=local-admin-token
+export BRUNOST_JUDGE_CALLBACK_SECRET=local-callback-secret
+export BRUNOST_PLATFORM_CALLBACK_TOKEN=local-platform-callback-token
+export BRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback
+export BRUNOST_PLATFORM_DATABASE="$PWD/platform.db"
+export BRUNOST_SUBMISSION_ROOT="$PWD/submissions"
+
+uvicorn app.main:app --host 127.0.0.1 --port 3000
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000) for the reference pages
+and [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs) for the API.
+The starter exposes JSON authentication and submission endpoints; its HTML
+pages are intentionally small so countries can replace them with their own
+frontend while keeping the same Platform Kit/Judge boundary.
+
+For a published package, install `brunost-platform-kit` from its release
+instead of the editable source path. The generated application still needs a
+Judge URL, API token, callback secret, and a database location.
+
 Available templates:
 
 - `python-fastapi` — a batteries-included Python API starter.
