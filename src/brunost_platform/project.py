@@ -354,6 +354,65 @@ def _admin_status(value: str) -> str:
     return f"<span class='pill {kind}'>{_admin_escape(value)}</span>"
 
 
+def _admin_slugify(value: str) -> str:
+    normalized = "".join(character.lower() if character.isalnum() else "-" for character in value.strip())
+    return "-".join(part for part in normalized.split("-") if part)[:80]
+
+
+def _admin_judge_kind(task_type: str) -> str:
+    return {"code_training": "ioi", "training_code": "model", "model_prediction": "model", "multiple_choice": "icpc", "agent_arena": "game", "agent_environment": "agent"}.get(task_type, "ioi")
+
+
+def _admin_scaffold_task_package(contest_id: str, slug: str, task_type: str) -> str:
+    root = Path(os.environ.get("BRUNOST_TASK_ROOT", "tasks")).expanduser().resolve() / _admin_slugify(contest_id) / slug
+    (root / "scorer").mkdir(parents=True, exist_ok=True)
+    (root / "public").mkdir(parents=True, exist_ok=True)
+    (root / "private").mkdir(parents=True, exist_ok=True)
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    kind = _admin_judge_kind(task_type)
+    (root / "judge.yaml").write_text(f"version: 1\nkind: {kind}\nruntime: python-3.13\nscoring: scorer.metrics:evaluate\nnetwork: disabled\n", encoding="utf-8")
+    (root / "scorer" / "metrics.py").write_text("def evaluate(submission_path: str, assets_path: str) -> dict[str, float]:\n    _ = submission_path, assets_path\n    return {'public': 0.0}\n", encoding="utf-8")
+    (root / "public" / "README.md").write_text("Put contestant-visible files here.\n", encoding="utf-8")
+    (root / "private" / ".gitkeep").write_text("", encoding="utf-8")
+    (root / "tests" / "test_task.py").write_text("# Add deterministic scorer tests here.\n", encoding="utf-8")
+    return str(root)
+
+
+def _admin_register_task(contest_id: str, *, title: str, slug: str, task_type: str, template_key: str = "", time_limit: str = "900", points: str = "", artifact_id: str = "", path: str = "") -> str:
+    clean_title = title.strip()
+    clean_slug = _admin_slugify(slug or title)
+    if not clean_title or not clean_slug:
+        raise ValueError("each task needs a title and slug")
+    try:
+        limit = int(time_limit or "900")
+    except ValueError as exc:
+        raise ValueError(f"task '{clean_title}' has an invalid time limit") from exc
+    if limit <= 0:
+        raise ValueError(f"task '{clean_title}' needs a positive time limit")
+    score_points = None
+    if points.strip():
+        try:
+            score_points = int(points)
+        except ValueError as exc:
+            raise ValueError(f"task '{clean_title}' has invalid points") from exc
+        if score_points < 0:
+            raise ValueError(f"task '{clean_title}' needs non-negative points")
+    if artifact_id and path:
+        raise ValueError(f"task '{clean_title}' needs exactly one artifact ID or local path")
+    task_ref = f"{_admin_slugify(contest_id)}/{clean_slug}"
+    if not artifact_id and not path:
+        path = _admin_scaffold_task_package(contest_id, clean_slug, task_type)
+        uploaded = judge.upload_artifact(path)
+        artifact_id = str(uploaded.get("artifact_id") or "")
+        if not artifact_id:
+            raise ValueError(f"Judge did not return an artifact ID for '{clean_title}'")
+    metadata = {"title": clean_title, "slug": clean_slug, "task_type": task_type, "template_key": template_key, "time_limit_seconds": limit, "points": score_points, "contest_id": contest_id}
+    payload = {"task_ref": task_ref, "kind": _admin_judge_kind(task_type), "metadata": metadata, "runtime": "python-3.13"}
+    payload["artifact_id" if artifact_id else "path"] = artifact_id or path
+    judge.register_task(**payload)
+    return task_ref
+
+
 @app.get("/login", response_class=HTMLResponse)
 def browser_login(next: str = "/admin"):
     content = "<div class='card form-card'><div class='page-head'><div><p class='eyebrow'>Operator access</p><h2>Sign in to Brunost</h2><p>Use the bootstrap account from <span class='mono'>BRUNOST_DEFAULT_ADMIN_EMAIL</span> and <span class='mono'>BRUNOST_DEFAULT_ADMIN_PASSWORD</span>.</p></div></div><form class='stack' method='post' action='/login'><input type='hidden' name='next' value='" + _admin_escape(next) + "'><label>Email<input type='email' name='email' required autocomplete='email'></label><label>Password<input type='password' name='password' required autocomplete='current-password'></label><button class='button' type='submit'>Continue to dashboard</button></form><p class='hint'>The bootstrap password is temporary. You must replace it before using the control room.</p></div>"
@@ -437,8 +496,8 @@ def admin_tasks(request: Request):
     if response:
         return response
     tasks = _admin_judge_snapshot().get("tasks") or []
-    rows = "".join("<tr><td><strong>" + _admin_escape(item.get("task_ref")) + "</strong><div class='hint'>" + _admin_escape(item.get("path")) + "</div></td><td>" + _admin_status(item.get("kind", "unknown")) + "</td><td class='mono'>" + _admin_escape(str((item.get("manifest") or {}).get("digest", "—"))[:16]) + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("runtime", "—")) + "</td></tr>" for item in tasks) or "<tr><td colspan='4' class='empty'>No task packages registered.</td></tr>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable IOI, ICPC, IOAI, agent, and game task definitions.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Task reference</th><th>Kind</th><th>Digest</th><th>Runtime</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+    rows = "".join("<tr><td><strong>" + _admin_escape((item.get("manifest") or {}).get("title") or item.get("task_ref")) + "</strong><div class='hint mono'>" + _admin_escape(item.get("task_ref")) + "</div></td><td>" + _admin_status((item.get("manifest") or {}).get("task_type") or item.get("kind", "unknown")) + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("points") if (item.get("manifest") or {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("time_limit_seconds", "—")) + " sec</td><td class='mono'>" + _admin_escape(str((item.get("manifest") or {}).get("digest", "—"))[:16]) + "</td></tr>" for item in tasks) or "<tr><td colspan='5' class='empty'>No task packages registered.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable IOI, ICPC, IOAI, agent, and game task definitions.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th>Digest</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
     return _admin_page("Tasks", content, user=user, active="tasks")
 
 
@@ -476,7 +535,7 @@ def admin_contests(request: Request):
     if response:
         return response
     contests = store.list_contests()
-    rows = "".join("<tr><td><strong>" + _admin_escape(contest.contest_id) + "</strong></td><td>" + _admin_escape(contest.name) + "</td><td>" + _admin_escape(len(contest.task_refs)) + " tasks</td><td>" + _admin_status(contest.status) + "</td><td>" + ("Public" if contest.metadata.get("leaderboard_visible") else "Hidden") + "</td></tr>" for contest in contests) or "<tr><td colspan='5' class='empty'>No contests created.</td></tr>"
+    rows = "".join("<tr><td><a class='text-brand' href='/admin/contests/" + quote(contest.contest_id) + "'><strong>" + _admin_escape(contest.contest_id) + "</strong></a></td><td>" + _admin_escape(contest.name) + "</td><td>" + _admin_escape(len(contest.task_refs)) + " tasks</td><td>" + _admin_status(contest.status) + "</td><td>" + ("Public" if contest.metadata.get("leaderboard_visible") else "Hidden") + "</td></tr>" for contest in contests) or "<tr><td colspan='5' class='empty'>No contests created.</td></tr>"
     content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Contests</h2><p>Define contest identity, task selection, and leaderboard visibility.</p></div><a class='button' href='/admin/contests/new'>Create contest</a></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Name</th><th>Tasks</th><th>Status</th><th>Leaderboard</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
     return _admin_page("Contests", content, user=user, active="contests")
 
@@ -489,13 +548,13 @@ def admin_contest_form(request: Request):
     tasks = _admin_judge_snapshot().get("tasks") or []
     existing = "".join("<label style='display:flex;grid-template-columns:auto 1fr;align-items:start;gap:9px;padding:9px 0;font-weight:600'><input type='checkbox' name='selected_task_ref' value='" + _admin_escape(item.get("task_ref")) + "' style='width:auto;margin-top:2px'><span>" + _admin_escape(item.get("task_ref")) + "<small class='hint' style='display:block;font-weight:400'>" + _admin_escape(item.get("kind", "task")) + " · " + _admin_escape((item.get("manifest") or {}).get("runtime", "runtime unspecified")) + "</small></span></label>" for item in tasks)
     existing = existing or "<div class='empty' style='padding:12px 0;text-align:left'>No registered Judge tasks yet. Add the first task below.</div>"
-    task_row = "<div class='task-row' style='display:grid;grid-template-columns:1.1fr .7fr 1fr 1fr;gap:9px;margin-top:10px'><input name='new_task_ref' placeholder='ioai/forecast-v1'><select name='new_task_kind'><option value='ioai'>IOAI</option><option value='ioi'>IOI</option><option value='icpc'>ICPC</option><option value='interactive'>Interactive</option><option value='model'>Model</option><option value='agent'>Agent</option><option value='game'>Game</option></select><input name='new_task_artifact_id' placeholder='artifact ID (production)'><input name='new_task_path' placeholder='local path (development)'></div>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Choose registered tasks or create new task packages without leaving this workflow.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or add new task packages below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Create new task packages</label><p class='hint'>For each new task, provide exactly one artifact ID or local path. Artifact IDs are portable across worker nodes.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another task</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
+    task_row = "<div class='task-row card' style='display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;padding:14px;background:#fafbfe'><label>Problem title<input name='new_task_title' placeholder='Maximum subarray'></label><label>Slug<input name='new_task_slug' placeholder='maximum-subarray'></label><label style='grid-column:1/-1'>Task type<select name='new_task_type'><option value='code_training'>Code (judged)</option><option value='training_code'>AI training code</option><option value='model_prediction'>Model / prediction</option><option value='multiple_choice'>Quiz</option><option value='agent_arena'>Agent arena</option><option value='agent_environment'>Agent environment</option></select></label><label>Competition preset<select name='new_task_template'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='new_task_time_limit' type='number' min='1' value='900'></label><label>Points<input name='new_task_points' type='number' min='0' placeholder='100'></label><label>Artifact ID (optional)<input name='new_task_artifact_id' placeholder='Auto-scaffold if empty'></label><label>Local package path (optional)<input name='new_task_path' placeholder='Used for development'></label></div>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Create the contest first, then define problems with the same title, slug, type, preset, time limit, and points workflow used by Brunost.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or create new Brunost-style problems below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Problems to create</label><p class='hint'>Leave package fields empty to generate a starter Judge package automatically. Open the contest workspace afterward to add more problems and edit their task packages.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another problem</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){if(input.name !== 'new_task_time_limit') input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
     return _admin_page("Create contest", content, user=user, active="contests")
 
 
 @app.post("/admin/contests", response_class=HTMLResponse)
-def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), selected_task_ref: list[str] | None = Form(None), new_task_ref: list[str] | None = Form(None), new_task_kind: list[str] | None = Form(None), new_task_artifact_id: list[str] | None = Form(None), new_task_path: list[str] | None = Form(None), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
+def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), selected_task_ref: list[str] | None = Form(None), new_task_title: list[str] | None = Form(None), new_task_slug: list[str] | None = Form(None), new_task_type: list[str] | None = Form(None), new_task_template: list[str] | None = Form(None), new_task_time_limit: list[str] | None = Form(None), new_task_points: list[str] | None = Form(None), new_task_artifact_id: list[str] | None = Form(None), new_task_path: list[str] | None = Form(None), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
@@ -504,34 +563,64 @@ def admin_contest_create(request: Request, contest_id: str = Form(...), name: st
         normalized = value.strip()
         if normalized and normalized not in refs_list:
             refs_list.append(normalized)
-    for index, raw_ref in enumerate(new_task_ref or []):
-        task_ref = raw_ref.strip()
-        if not task_ref:
+    for index, raw_title in enumerate(new_task_title or []):
+        title = raw_title.strip()
+        if not title:
             continue
-        kind = (new_task_kind[index] if new_task_kind and index < len(new_task_kind) else "ioai").strip() or "ioai"
+        slug = (new_task_slug[index] if new_task_slug and index < len(new_task_slug) else "").strip()
+        task_type = (new_task_type[index] if new_task_type and index < len(new_task_type) else "code_training").strip() or "code_training"
+        template_key = (new_task_template[index] if new_task_template and index < len(new_task_template) else "").strip()
+        time_limit = (new_task_time_limit[index] if new_task_time_limit and index < len(new_task_time_limit) else "900").strip() or "900"
+        points = (new_task_points[index] if new_task_points and index < len(new_task_points) else "").strip()
         artifact_id = (new_task_artifact_id[index] if new_task_artifact_id and index < len(new_task_artifact_id) else "").strip()
         path = (new_task_path[index] if new_task_path and index < len(new_task_path) else "").strip()
-        if bool(artifact_id) == bool(path):
-            content = "<div class='card notice error'>Task '" + _admin_escape(task_ref) + "' needs exactly one artifact ID or local path.</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
-            return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=422)
         try:
-            payload = {"task_ref": task_ref, "kind": kind, "artifact_id" if artifact_id else "path": artifact_id or path}
-            judge.register_task(**payload)
+            task_ref = _admin_register_task(contest_id, title=title, slug=slug, task_type=task_type, template_key=template_key, time_limit=time_limit, points=points, artifact_id=artifact_id, path=path)
         except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
-            content = "<div class='card notice error'>Could not register task '" + _admin_escape(task_ref) + "': " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
+            content = "<div class='card notice error'>Could not create problem '" + _admin_escape(title) + "': " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
             return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
         if task_ref not in refs_list:
             refs_list.append(task_ref)
     refs = tuple(refs_list)
-    if not refs:
-        content = "<div class='card notice error'>Add or select at least one task before creating the contest.</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
-        return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=422)
     try:
         platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}))
     except Exception as exc:  # noqa: BLE001 - surface store validation in the UI
         content = "<div class='card notice error'>Contest creation failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Try again</a></p>"
         return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
-    return RedirectResponse("/admin/contests", status_code=303)
+    return RedirectResponse("/admin/contests/" + quote(contest_id.strip()), status_code=303)
+
+
+@app.get("/admin/contests/{contest_id}", response_class=HTMLResponse)
+def admin_contest_workspace(request: Request, contest_id: str):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    contest = store.get_contest(contest_id)
+    if contest is None:
+        return HTMLResponse(_admin_page("Contest not found", "<div class='card notice error'>This contest does not exist.</div><p><a class='button secondary' href='/admin/contests'>Back to contests</a></p>", user=user, active="contests"), status_code=404)
+    task_map = {item.get("task_ref"): item for item in (_admin_judge_snapshot().get("tasks") or [])}
+    rows = "".join("<tr><td><strong>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("title") or ref.rsplit("/", 1)[-1]) + "</strong><div class='hint mono'>" + _admin_escape(ref) + "</div></td><td>" + _admin_status((task_map.get(ref) or {}).get("manifest", {}).get("task_type") or (task_map.get(ref) or {}).get("kind", "draft")) + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("points") if (task_map.get(ref) or {}).get("manifest", {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("time_limit_seconds", "—")) + " sec</td><td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td></tr>" for ref in contest.task_refs) or "<tr><td colspan='5' class='empty'>No problems yet. Add the first one below.</td></tr>"
+    task_types = "<option value='code_training'>Code (judged) — source code against tests</option><option value='training_code'>AI training code — train and score an artifact</option><option value='model_prediction'>Model / prediction — upload a file or model</option><option value='multiple_choice'>Quiz — multiple-choice questions</option><option value='agent_arena'>Agent arena — submissions play each other</option><option value='agent_environment'>Agent environment — hidden scenarios</option>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Contest workspace</p><h2>" + _admin_escape(contest.name) + "</h2><p class='hint mono'>" + _admin_escape(contest.contest_id) + " · " + _admin_escape(contest.status) + "</p></div><a class='button secondary' href='/admin/contests'>Back to contests</a></div><section class='section'><div class='section-head'><div><h2>Problems</h2><p>Define tasks the same way as Brunost: title, slug, type, preset, time limit, and points.</p></div></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section><section class='card form-card section'><div class='section-head'><div><p class='eyebrow'>Problem authoring</p><h2>Add a problem</h2><p>Creating a problem also creates a starter Judge package. Open the task registry to replace its evaluator and assets.</p></div></div><form class='stack' method='post' action='/admin/contests/" + quote(contest.contest_id) + "/tasks"><div class='form-grid'><label>Problem title<input name='title' placeholder='Maximum subarray' required></label><label>Slug<input name='slug' placeholder='maximum-subarray' required></label></div><label>Task type<select name='task_type'>" + task_types + "</select></label><div class='form-grid'><label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='time_limit' type='number' min='1' value='900'></label></div><label>Points<input name='points' type='number' min='0' placeholder='100'></label><button class='button' type='submit'>Add problem</button></form></section>"
+    return _admin_page("Contest workspace", content, user=user, active="contests")
+
+
+@app.post("/admin/contests/{contest_id}/tasks")
+def admin_contest_task_create(request: Request, contest_id: str, title: str = Form(...), slug: str = Form(...), task_type: str = Form("code_training"), template_key: str = Form(""), time_limit: str = Form("900"), points: str = Form("")):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    contest = store.get_contest(contest_id)
+    if contest is None:
+        return HTMLResponse(_admin_page("Contest not found", "<div class='card notice error'>This contest does not exist.</div>", user=user, active="contests"), status_code=404)
+    try:
+        task_ref = _admin_register_task(contest_id, title=title, slug=slug, task_type=task_type, template_key=template_key, time_limit=time_limit, points=points)
+        refs = tuple(list(contest.task_refs) + ([task_ref] if task_ref not in contest.task_refs else []))
+        platform.create_contest(Contest(contest.contest_id, contest.name, refs, contest.status, contest.metadata))
+    except Exception as exc:  # noqa: BLE001 - surface task authoring errors in the UI
+        content = "<div class='card notice error'>Problem creation failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/" + quote(contest_id) + "'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Contest workspace", content, user=user, active="contests"), status_code=400)
+    return RedirectResponse("/admin/contests/" + quote(contest_id), status_code=303)
 
 
 @app.get("/admin/workers", response_class=HTMLResponse)
@@ -666,6 +755,7 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files["app/main.py"] += """\n\nclass ContestIn(BaseModel):\n    contest_id: str = Field(min_length=1)\n    name: str = Field(min_length=1)\n    task_refs: list[str] = Field(default_factory=list)\n\n\n@app.post(\"/api/contests\", status_code=201)\ndef create_contest(request: ContestIn):\n    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs))).as_dict()\n\n\n@app.get(\"/api/contests\")\ndef list_contests():\n    return [contest.as_dict() for contest in store.list_contests()]\n"""
         files["app/main.py"] = _reference_fastapi_main()
         files["app/main.py"] += _admin_ui_appendix()
+        files["app/main.py"] = files["app/main.py"].replace('+ "/tasks"><div', '+ "/tasks\'><div')
         return files
     if template == "node-fastify":
         files = _node_files(project_name)
