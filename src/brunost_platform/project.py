@@ -80,7 +80,7 @@ def current_user(authorization: str | None = Header(default=None)):
 
 
 def staff_user(user=Depends(current_user)):
-    if not set(user.roles).intersection({"admin", "organizer"}):
+    if not platform.policy.can_manage_platform(user):
         raise HTTPException(status_code=403, detail="organizer privileges required")
     return user
 
@@ -96,7 +96,7 @@ def register(request: RegisterIn):
         raise HTTPException(status_code=409, detail="email is already registered")
     # The first account is the local administrator so a fresh standalone
     # deployment can create its first contest without editing the database.
-    roles = ("admin",) if not store.list_users() else ("contestant",)
+    roles = ("admin",) if not store.list_users() else (("student",) if platform.policy.edition == "standalone" else ("contestant",))
     return identity.register(email=request.email, password=request.password, display_name=request.display_name, roles=roles).as_dict()
 
 
@@ -124,7 +124,7 @@ def me(user=Depends(current_user)):
 
 @app.post("/api/contests", status_code=201)
 def create_contest(request: ContestIn, user=Depends(staff_user)):
-    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs), metadata={"leaderboard_visible": request.leaderboard_visible, "best_attempt": request.best_attempt})).as_dict()
+    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs), metadata={"leaderboard_visible": request.leaderboard_visible, "best_attempt": request.best_attempt}), actor=user).as_dict()
 
 
 @app.get("/api/contests")
@@ -310,7 +310,9 @@ def _admin_escape(value) -> str:
 
 
 def _admin_page(title: str, content: str, *, user=None, active: str = "dashboard") -> str:
-    links = [("dashboard", "◈", "Overview", "/admin"), ("tasks", "▣", "Tasks", "/admin/tasks"), ("contests", "◇", "Contests", "/admin/contests"), ("evaluations", "◌", "Evaluations", "/admin/evaluations"), ("workers", "♢", "Workers", "/admin/workers"), ("definitions", "⌘", "Agents & games", "/admin/definitions")]
+    links = [("dashboard", "◈", "Overview", "/admin"), ("contests", "◇", "Contests", "/admin/contests"), ("evaluations", "◌", "Evaluations", "/admin/evaluations"), ("workers", "♢", "Workers", "/admin/workers"), ("definitions", "⌘", "Agents & games", "/admin/definitions")]
+    if platform.policy.global_task_library_enabled:
+        links.insert(1, ("tasks", "▣", "Tasks", "/admin/tasks"))
     nav = "".join(f'<a class="{("active" if key == active else "")}" href="{href}"><span>{icon}</span>{label}</a>' for key, icon, label, href in links)
     name = _admin_escape(getattr(user, "display_name", "Operator"))
     initial = _admin_escape((getattr(user, "display_name", "O") or "O")[:1].upper())
@@ -323,7 +325,7 @@ def _admin_user_or_redirect(request: Request):
         return None, RedirectResponse("/login?next=" + quote(request.url.path), status_code=303)
     if user.metadata.get("must_change_password"):
         return None, RedirectResponse("/change-password?next=" + quote(request.url.path), status_code=303)
-    if not set(user.roles).intersection({"admin", "organizer"}):
+    if not platform.policy.can_manage_platform(user):
         return None, HTMLResponse(_admin_page("Access denied", "<div class='card notice error'>Organizer privileges are required for this area.</div>"), status_code=403)
     return user, None
 
@@ -486,7 +488,8 @@ def admin_dashboard(request: Request):
     worker_rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td></tr>" for item in workers[:8]) or "<tr><td colspan='4' class='empty'>No workers enrolled yet.</td></tr>"
     evaluation_rows = "".join("<tr><td class='mono'>" + _admin_escape(str(item.get("execution_id", ""))[:12]) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_status(item.get("status", "unknown")) + "</td><td>" + _admin_escape(item.get("score") if item.get("score") is not None else "—") + "</td></tr>" for item in executions[:8]) or "<tr><td colspan='4' class='empty'>No evaluations yet.</td></tr>"
     content = cards + "<div class='grid two section'><section><div class='section-head'><div><h2>Worker fleet</h2><p>Live capacity reported by the Judge.</p></div><a class='button secondary small' href='/admin/workers'>View all</a></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Resources</th><th>Region</th></tr></thead><tbody>" + worker_rows + "</tbody></table></div></section><section><div class='section-head'><div><h2>Recent evaluations</h2><p>Execution state from the Judge.</p></div><a class='button secondary small' href='/admin/evaluations'>View all</a></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Score</th></tr></thead><tbody>" + evaluation_rows + "</tbody></table></div></section></div>"
-    content += "<div class='grid two section'><section class='card'><div class='section-head'><div><h2>Platform</h2><p>Owned by this application.</p></div></div><div class='grid two'><div><div class='metric-label'>Users</div><div class='metric'>" + str(len(users)) + "</div></div><div><div class='metric-label'>Contests</div><div class='metric'>" + str(len(contests)) + "</div></div></div></section><section class='card'><div class='section-head'><div><h2>Quick actions</h2><p>Common operator workflows.</p></div></div><p><a class='button' href='/admin/tasks/new'>Register a task</a> <a class='button secondary' href='/admin/contests/new'>Create a contest</a></p><p class='hint'>Task packages and execution state remain Judge-owned; contests and leaderboard policy remain Platform-owned.</p></section></div>"
+    task_action = "<a class='button' href='/admin/tasks/new'>Register a task</a> " if platform.policy.global_task_library_enabled else ""
+    content += "<div class='grid two section'><section class='card'><div class='section-head'><div><h2>Platform</h2><p>Owned by this application.</p></div></div><div class='grid two'><div><div class='metric-label'>Users</div><div class='metric'>" + str(len(users)) + "</div></div><div><div class='metric-label'>Contests</div><div class='metric'>" + str(len(contests)) + "</div></div></div></section><section class='card'><div class='section-head'><div><h2>Quick actions</h2><p>Common operator workflows.</p></div></div><p>" + task_action + "<a class='button secondary' href='/admin/contests/new'>Create a contest</a></p><p class='hint'>Task packages and execution state remain Judge-owned; contests and leaderboard policy remain Platform-owned.</p></section></div>"
     return _admin_page("Operations overview", content, user=user, active="dashboard")
 
 
@@ -495,6 +498,8 @@ def admin_tasks(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.global_task_library_enabled:
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div><p><a class='button secondary' href='/admin/contests'>Open contests</a></p>", user=user), status_code=404)
     tasks = _admin_judge_snapshot().get("tasks") or []
     rows = "".join("<tr><td><strong>" + _admin_escape((item.get("manifest") or {}).get("title") or item.get("task_ref")) + "</strong><div class='hint mono'>" + _admin_escape(item.get("task_ref")) + "</div></td><td>" + _admin_status((item.get("manifest") or {}).get("task_type") or item.get("kind", "unknown")) + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("points") if (item.get("manifest") or {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("time_limit_seconds", "—")) + " sec</td><td class='mono'>" + _admin_escape(str((item.get("manifest") or {}).get("digest", "—"))[:16]) + "</td></tr>" for item in tasks) or "<tr><td colspan='5' class='empty'>No task packages registered.</td></tr>"
     content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable IOI, ICPC, IOAI, agent, and game task definitions.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th>Digest</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
@@ -506,6 +511,8 @@ def admin_task_form(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.global_task_library_enabled:
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div>", user=user), status_code=404)
     kinds = "".join(f"<option value='{kind}'>{kind.upper()}</option>" for kind in ("ioai", "ioi", "icpc", "interactive", "model", "agent", "game", "output-only"))
     content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Register a task</h2><p>Use an artifact ID for a distributed deployment, or a local path for development.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/tasks'><div class='form-grid'><label>Task reference<input name='task_ref' placeholder='national-2026/forecast-v1' required></label><label>Task kind<select name='kind'>" + kinds + "</select></label></div><label>Immutable artifact ID<input name='artifact_id' placeholder='64-character content hash'></label><label>Local task path<input name='path' placeholder='/srv/tasks/forecast-v1'></label><div class='notice'>Provide exactly one of artifact ID or local path. Artifact IDs are the portable production option.</div><button class='button' type='submit'>Register task with Judge</button></form></div>"
     return _admin_page("Register task", content, user=user, active="tasks")
@@ -516,6 +523,8 @@ def admin_task_create(request: Request, task_ref: str = Form(...), kind: str = F
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.global_task_library_enabled:
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div>", user=user), status_code=404)
     if bool(artifact_id.strip()) == bool(path.strip()):
         content = "<div class='card notice error'>Provide exactly one artifact ID or local task path.</div><p><a class='button secondary' href='/admin/tasks/new'>Go back</a></p>"
         return HTMLResponse(_admin_page("Register task", content, user=user, active="tasks"), status_code=422)
@@ -583,7 +592,7 @@ def admin_contest_create(request: Request, contest_id: str = Form(...), name: st
             refs_list.append(task_ref)
     refs = tuple(refs_list)
     try:
-        platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}))
+        platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}), actor=user)
     except Exception as exc:  # noqa: BLE001 - surface store validation in the UI
         content = "<div class='card notice error'>Contest creation failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Try again</a></p>"
         return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
@@ -600,6 +609,8 @@ def admin_contest_workspace(request: Request, contest_id: str):
         return HTMLResponse(_admin_page("Contest not found", "<div class='card notice error'>This contest does not exist.</div><p><a class='button secondary' href='/admin/contests'>Back to contests</a></p>", user=user, active="contests"), status_code=404)
     task_map = {item.get("task_ref"): item for item in (_admin_judge_snapshot().get("tasks") or [])}
     rows = "".join("<tr><td><strong>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("title") or ref.rsplit("/", 1)[-1]) + "</strong><div class='hint mono'>" + _admin_escape(ref) + "</div></td><td>" + _admin_status((task_map.get(ref) or {}).get("manifest", {}).get("task_type") or (task_map.get(ref) or {}).get("kind", "draft")) + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("points") if (task_map.get(ref) or {}).get("manifest", {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("time_limit_seconds", "—")) + " sec</td><td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td></tr>" for ref in contest.task_refs) or "<tr><td colspan='5' class='empty'>No problems yet. Add the first one below.</td></tr>"
+    if not platform.policy.global_task_library_enabled:
+        rows = rows.replace("<td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td>", "<td><span class='hint'>Managed in contest</span></td>")
     task_types = "<option value='code_training'>Code (judged) — source code against tests</option><option value='training_code'>AI training code — train and score an artifact</option><option value='model_prediction'>Model / prediction — upload a file or model</option><option value='multiple_choice'>Quiz — multiple-choice questions</option><option value='agent_arena'>Agent arena — submissions play each other</option><option value='agent_environment'>Agent environment — hidden scenarios</option>"
     content = "<div class='page-head'><div><p class='eyebrow'>Contest workspace</p><h2>" + _admin_escape(contest.name) + "</h2><p class='hint mono'>" + _admin_escape(contest.contest_id) + " · " + _admin_escape(contest.status) + "</p></div><a class='button secondary' href='/admin/contests'>Back to contests</a></div><section class='section'><div class='section-head'><div><h2>Problems</h2><p>Define tasks the same way as Brunost: title, slug, type, preset, time limit, and points.</p></div></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section><section class='card form-card section'><div class='section-head'><div><p class='eyebrow'>Problem authoring</p><h2>Add a problem</h2><p>Creating a problem also creates a starter Judge package. Open the task registry to replace its evaluator and assets.</p></div></div><form class='stack' method='post' action='/admin/contests/" + quote(contest.contest_id) + "/tasks"><div class='form-grid'><label>Problem title<input name='title' placeholder='Maximum subarray' required></label><label>Slug<input name='slug' placeholder='maximum-subarray' required></label></div><label>Task type<select name='task_type'>" + task_types + "</select></label><div class='form-grid'><label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='time_limit' type='number' min='1' value='900'></label></div><label>Points<input name='points' type='number' min='0' placeholder='100'></label><button class='button' type='submit'>Add problem</button></form></section>"
     return _admin_page("Contest workspace", content, user=user, active="contests")
@@ -616,7 +627,7 @@ def admin_contest_task_create(request: Request, contest_id: str, title: str = Fo
     try:
         task_ref = _admin_register_task(contest_id, title=title, slug=slug, task_type=task_type, template_key=template_key, time_limit=time_limit, points=points)
         refs = tuple(list(contest.task_refs) + ([task_ref] if task_ref not in contest.task_refs else []))
-        platform.create_contest(Contest(contest.contest_id, contest.name, refs, contest.status, contest.metadata))
+        platform.create_contest(Contest(contest.contest_id, contest.name, refs, contest.status, contest.metadata), actor=user)
     except Exception as exc:  # noqa: BLE001 - surface task authoring errors in the UI
         content = "<div class='card notice error'>Problem creation failed: " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/" + quote(contest_id) + "'>Go back</a></p>"
         return HTMLResponse(_admin_page("Contest workspace", content, user=user, active="contests"), status_code=400)
@@ -756,6 +767,11 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files["app/main.py"] = _reference_fastapi_main()
         files["app/main.py"] += _admin_ui_appendix()
         files["app/main.py"] = files["app/main.py"].replace('+ "/tasks"><div', '+ "/tasks\'><div')
+        files[".env.example"] += "BRUNOST_PLATFORM_EDITION=standalone\nBRUNOST_PLATFORM_FEATURES=\n"
+        files["docker-compose.yml"] = files["docker-compose.yml"].replace(
+            "      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n",
+            "      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_PLATFORM_EDITION: ${BRUNOST_PLATFORM_EDITION:-standalone}\n      BRUNOST_PLATFORM_FEATURES: ${BRUNOST_PLATFORM_FEATURES:-}\n",
+        )
         return files
     if template == "node-fastify":
         files = _node_files(project_name)
@@ -793,6 +809,16 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files["src/server.ts"] = files["src/server.ts"].replace(
             "const data = Buffer.from(await tar.c({ cwd: directory, gzip: true, portable: true, mtime: new Date(0) }, [\".\"]));",
             "const stream = tar.c({ cwd: directory, gzip: true, portable: true, mtime: new Date(0) }, [\".\"]);\\n  const chunks: Buffer[] = [];\\n  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));\\n  const data = Buffer.concat(chunks);",
+        )
+        files["src/server.ts"] = files["src/server.ts"].replace(
+            'const statePath = process.env.BRUNOST_PLATFORM_DATABASE ?? "platform.json";',
+            'const statePath = process.env.BRUNOST_PLATFORM_DATABASE ?? "platform.json";\\nconst edition = process.env.BRUNOST_PLATFORM_EDITION ?? "standalone";\\nconst advanced = edition === "advanced";',
+        ).replace(
+            'role === "admin" || role === "organizer"',
+            'role === "admin" || (advanced && ["organizer", "teacher", "contest_creator"].includes(role))',
+        ).replace(
+            'state.users.length ? ["contestant"] : ["admin"]',
+            'state.users.length ? [advanced ? "contestant" : "student"] : ["admin"]',
         )
         files["src/server.ts"] = files["src/server.ts"].replace("\\n", "\n")
         return files

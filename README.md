@@ -123,6 +123,41 @@ frameworks can use the same dependency-free gateway and contracts.
 - **Hybrid:** generated modules are used with external identity, email, or
   leaderboard adapters.
 
+## Standalone and Premium editions
+
+The same open-source contest core can serve two deployment profiles. The
+default standalone profile is a small national-contest website: the first
+account is an administrator, later accounts are students, only administrators
+create contests, and problems are authored inside a contest. It does not
+remove Judge APIs or task capabilities; it keeps the optional global task
+library out of the default operator UI.
+
+Premium/advanced deployments keep that exact contest and Judge contract while
+adding private modules such as organizations, courses, richer identity, and a
+public task library. Enable the broader creator roles and optional UI with:
+
+```bash
+export BRUNOST_PLATFORM_EDITION=advanced
+# Optional capability flags for a custom profile:
+export BRUNOST_PLATFORM_FEATURES=task.global-library,courses,contest.user-created
+```
+
+The standalone default is explicit and safe to operate:
+
+```bash
+export BRUNOST_PLATFORM_EDITION=standalone
+export BRUNOST_PLATFORM_FEATURES=
+```
+
+An embedded Premium application can keep its own authentication and pass an
+opaque identity projection through `ExternalIdentityAdapter`. The adapter
+accepts a subject, roles, organization, and metadata; passwords and external
+tokens stay in the embedding application. This lets the existing Brunost UI
+continue unchanged while it calls the shared contest/Judge APIs as a client.
+
+See [`docs/editions.md`](docs/editions.md) for the ownership boundary and the
+migration path from the reference UI to an existing platform.
+
 The kit intentionally keeps its core dependency-free. Install framework
 dependencies only in the generated application that needs them.
 

@@ -7,7 +7,7 @@ import hmac
 import os
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from brunost_platform.models import User
@@ -93,7 +93,56 @@ class LocalIdentityAdapter:
 
 @dataclass
 class ExternalIdentityAdapter:
-    resolver: Callable[[Any], str | None]
+    """Bridge an external identity provider into a small platform projection.
+
+    The resolver belongs to the embedding application (OIDC, SAML, an LMS,
+    or Brunost Premium).  The Judge and Platform Kit never receive external
+    passwords or tokens; they only see this opaque subject and its roles.
+    """
+
+    resolver: Callable[[Any], ExternalPrincipal | dict[str, Any] | str | None]
+
+    def resolve(self, request: Any) -> ExternalPrincipal | None:
+        value = self.resolver(request)
+        if value is None:
+            return None
+        if isinstance(value, ExternalPrincipal):
+            return value
+        if isinstance(value, str):
+            return ExternalPrincipal(subject_id=value)
+        if isinstance(value, dict):
+            subject = value.get("subject_id") or value.get("sub") or value.get("user_id")
+            if not subject:
+                return None
+            raw_roles = value.get("roles", ())
+            if isinstance(raw_roles, str):
+                raw_roles = (raw_roles,)
+            roles = tuple(str(role).strip() for role in raw_roles if str(role).strip())
+            known = {"subject_id", "sub", "user_id", "email", "display_name", "roles", "organization_id", "metadata"}
+            metadata = dict(value.get("metadata") or {})
+            metadata.update({key: item for key, item in value.items() if key not in known})
+            return ExternalPrincipal(
+                subject_id=str(subject),
+                email=str(value["email"]) if value.get("email") else None,
+                display_name=str(value["display_name"]) if value.get("display_name") else None,
+                roles=roles,
+                organization_id=str(value["organization_id"]) if value.get("organization_id") else None,
+                metadata=metadata,
+            )
+        raise TypeError("identity resolver must return ExternalPrincipal, a mapping, a subject string, or None")
 
     def get_subject(self, request: Any) -> str | None:
-        return self.resolver(request)
+        principal = self.resolve(request)
+        return principal.subject_id if principal else None
+
+
+@dataclass(frozen=True)
+class ExternalPrincipal:
+    """Non-sensitive identity data projected by an embedding platform."""
+
+    subject_id: str
+    email: str | None = None
+    display_name: str | None = None
+    roles: tuple[str, ...] = ()
+    organization_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

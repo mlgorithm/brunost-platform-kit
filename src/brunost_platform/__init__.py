@@ -8,20 +8,37 @@ judge gateway and platform module contracts.
 from brunost_platform.artifacts import artifact_id, pack_directory
 from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.gateway import HttpJudgeGateway, JudgeGateway, JudgeGatewayError
-from brunost_platform.identity import ExternalIdentityAdapter, LocalIdentityAdapter
+from brunost_platform.identity import ExternalIdentityAdapter, ExternalPrincipal, LocalIdentityAdapter
 from brunost_platform.leaderboard_policy import LeaderboardPolicy, normalize_policy, project_leaderboard
 from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
+from brunost_platform.policy import (
+    COURSES,
+    CREATE_CONTEST,
+    CREATE_NESTED_TASK,
+    GLOBAL_TASK_LIBRARY,
+    MANAGE_CONTEST,
+    USER_CREATED_CONTESTS,
+    PlatformPolicy,
+)
 from brunost_platform.store import SQLitePlatformStore
 
 __all__ = [
+    "COURSES",
+    "CREATE_CONTEST",
+    "CREATE_NESTED_TASK",
+    "GLOBAL_TASK_LIBRARY",
+    "MANAGE_CONTEST",
+    "USER_CREATED_CONTESTS",
     "Contest",
     "ExternalIdentityAdapter",
+    "ExternalPrincipal",
     "HttpJudgeGateway",
     "JudgeGateway",
     "JudgeGatewayError",
     "LeaderboardEntry",
     "LeaderboardPolicy",
     "LocalIdentityAdapter",
+    "PlatformPolicy",
     "SQLitePlatformStore",
     "Submission",
     "User",

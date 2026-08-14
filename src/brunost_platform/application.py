@@ -11,18 +11,35 @@ from brunost_platform.adapters import LeaderboardAdapter, NullLeaderboard
 from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.gateway import JudgeGateway
 from brunost_platform.models import Contest, LeaderboardEntry, Submission
+from brunost_platform.policy import PlatformPolicy
 from brunost_platform.store import SQLitePlatformStore
 
 
 class PlatformApplication:
     """Compose a judge gateway with optional platform-owned modules."""
 
-    def __init__(self, judge: JudgeGateway, leaderboard: LeaderboardAdapter | None = None, store: SQLitePlatformStore | None = None) -> None:
+    def __init__(
+        self,
+        judge: JudgeGateway,
+        leaderboard: LeaderboardAdapter | None = None,
+        store: SQLitePlatformStore | None = None,
+        policy: PlatformPolicy | None = None,
+    ) -> None:
         self.judge = judge
         self.store = store
         self.leaderboard = leaderboard or (store if store is not None else NullLeaderboard())
+        self.policy = policy or PlatformPolicy.from_environment()
 
-    def create_contest(self, contest: Contest) -> Contest:
+    def create_contest(self, contest: Contest, *, actor: Any | None = None) -> Contest:
+        """Create or update a contest after applying the edition policy.
+
+        ``actor`` is optional for backwards compatibility with framework
+        integrations that perform authorization in their own policy layer.
+        Generated applications pass it explicitly, so standalone deployments
+        cannot be bypassed through the HTTP API.
+        """
+        if actor is not None and not self.policy.can_create_contest(actor):
+            raise PermissionError("this user cannot create contests")
         if self.store is None:
             raise RuntimeError("a persistent store is required to create contests")
         return self.store.create_contest(contest)
