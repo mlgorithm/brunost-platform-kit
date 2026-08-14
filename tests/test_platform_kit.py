@@ -42,6 +42,13 @@ def test_templates_are_complete(tmp_path: Path):
     assert "src/server.ts" in template_files("node-fastify", "demo")
 
 
+def test_reference_template_has_headless_premium_identity_boundary():
+    source = template_files("python-fastapi", "demo")["app/main.py"]
+    assert "BRUNOST_PLATFORM_SERVICE_TOKEN" in source
+    assert "x-brunost-subject" in source
+    assert "x-brunost-roles" in source
+
+
 def test_init_refuses_to_overwrite(tmp_path: Path):
     root = tmp_path / "existing"
     root.mkdir()

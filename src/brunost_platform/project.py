@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from brunost_platform.application import PlatformApplication
 from brunost_platform.gateway import gateway_from_environment
 from brunost_platform.identity import LocalIdentityAdapter
-from brunost_platform.models import Contest, Submission
+from brunost_platform.models import Contest, Submission, User
 from brunost_platform.store import SQLitePlatformStore
 
 
@@ -35,6 +35,7 @@ platform = PlatformApplication(judge, store=store)
 identity = LocalIdentityAdapter(store)
 submission_root = Path(os.environ.get("BRUNOST_SUBMISSION_ROOT", "submissions")).expanduser().resolve()
 callback_url = os.environ.get("BRUNOST_PLATFORM_CALLBACK_URL", "http://127.0.0.1:3000/api/judge/callback")
+service_token = os.environ.get("BRUNOST_PLATFORM_SERVICE_TOKEN", "")
 default_admin_email = os.environ.get("BRUNOST_DEFAULT_ADMIN_EMAIL", "admin@example.org").strip().lower()
 default_admin_password = os.environ.get("BRUNOST_DEFAULT_ADMIN_PASSWORD", "change-me-now")
 if not store.list_users():
@@ -71,9 +72,22 @@ class ContestIn(BaseModel):
     best_attempt: bool = True
 
 
-def current_user(authorization: str | None = Header(default=None)):
+def current_user(request: Request, authorization: str | None = Header(default=None)):
     token = authorization.removeprefix("Bearer ").strip() if authorization else ""
     user = store.get_session_user(token) if token else None
+    if user is None and service_token and token == service_token:
+        subject = request.headers.get("x-brunost-subject", "").strip()
+        if not subject:
+            raise HTTPException(status_code=401, detail="external subject is required")
+        roles = tuple(role.strip() for role in request.headers.get("x-brunost-roles", "").split(",") if role.strip())
+        user = User(
+            user_id=subject,
+            email=request.headers.get("x-brunost-email", f"{subject}@external.invalid"),
+            display_name=request.headers.get("x-brunost-display-name", subject),
+            organization_id=request.headers.get("x-brunost-organization") or None,
+            roles=roles,
+            metadata={"external_identity": True},
+        )
     if user is None:
         raise HTTPException(status_code=401, detail="login required")
     return user
@@ -768,9 +782,10 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files["app/main.py"] += _admin_ui_appendix()
         files["app/main.py"] = files["app/main.py"].replace('+ "/tasks"><div', '+ "/tasks\'><div')
         files[".env.example"] += "BRUNOST_PLATFORM_EDITION=standalone\nBRUNOST_PLATFORM_FEATURES=\n"
+        files[".env.example"] += "BRUNOST_PLATFORM_SERVICE_TOKEN=\n"
         files["docker-compose.yml"] = files["docker-compose.yml"].replace(
             "      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n",
-            "      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_PLATFORM_EDITION: ${BRUNOST_PLATFORM_EDITION:-standalone}\n      BRUNOST_PLATFORM_FEATURES: ${BRUNOST_PLATFORM_FEATURES:-}\n",
+            "      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_PLATFORM_EDITION: ${BRUNOST_PLATFORM_EDITION:-standalone}\n      BRUNOST_PLATFORM_FEATURES: ${BRUNOST_PLATFORM_FEATURES:-}\n      BRUNOST_PLATFORM_SERVICE_TOKEN: ${BRUNOST_PLATFORM_SERVICE_TOKEN:-}\n",
         )
         return files
     if template == "node-fastify":

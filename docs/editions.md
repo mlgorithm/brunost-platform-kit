@@ -62,6 +62,29 @@ principal = identity.resolve(request)
 Only the opaque subject and authorization projection cross into the contest
 core. Passwords, sessions, and provider tokens stay private.
 
+### Headless Premium integration
+
+For a separately deployed Premium service, the generated FastAPI reference
+application supports a service-to-service boundary. Set a long random
+`BRUNOST_PLATFORM_SERVICE_TOKEN` on the Platform Kit and send it as a bearer
+token over HTTPS. Include the already-authenticated Premium projection in
+these headers:
+
+```text
+X-Brunost-Subject: premium-user-id
+X-Brunost-Email: teacher@example.org
+X-Brunost-Display-Name: Teacher
+X-Brunost-Roles: teacher,contest_creator
+X-Brunost-Organization: organization-id
+```
+
+The Platform Kit reconstructs a short-lived `User` projection for policy
+checks; it does not create a Premium password or session. The private
+`brunost-premium` package contains `HttpContestCore`, which sends this
+projection when delegating contest creation. Production deployments must use
+TLS, rotate the service token, and restrict the service-token ingress to the
+Premium network.
+
 ## Configuration and extension
 
 ```bash
@@ -83,4 +106,3 @@ The recommended migration is:
 4. Enable advanced capabilities only where Premium product policy allows them.
 5. Compare callback and leaderboard projections before switching production
    traffic.
-
