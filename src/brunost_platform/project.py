@@ -486,16 +486,46 @@ def admin_contest_form(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Contest policy belongs to the Platform; task execution belongs to the Judge.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><label>Task references<textarea name='task_refs' rows='3' placeholder='one task_ref per line or comma-separated'></textarea></label><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
+    tasks = _admin_judge_snapshot().get("tasks") or []
+    existing = "".join("<label style='display:flex;grid-template-columns:auto 1fr;align-items:start;gap:9px;padding:9px 0;font-weight:600'><input type='checkbox' name='selected_task_ref' value='" + _admin_escape(item.get("task_ref")) + "' style='width:auto;margin-top:2px'><span>" + _admin_escape(item.get("task_ref")) + "<small class='hint' style='display:block;font-weight:400'>" + _admin_escape(item.get("kind", "task")) + " · " + _admin_escape((item.get("manifest") or {}).get("runtime", "runtime unspecified")) + "</small></span></label>" for item in tasks)
+    existing = existing or "<div class='empty' style='padding:12px 0;text-align:left'>No registered Judge tasks yet. Add the first task below.</div>"
+    task_row = "<div class='task-row' style='display:grid;grid-template-columns:1.1fr .7fr 1fr 1fr;gap:9px;margin-top:10px'><input name='new_task_ref' placeholder='ioai/forecast-v1'><select name='new_task_kind'><option value='ioai'>IOAI</option><option value='ioi'>IOI</option><option value='icpc'>ICPC</option><option value='interactive'>Interactive</option><option value='model'>Model</option><option value='agent'>Agent</option><option value='game'>Game</option></select><input name='new_task_artifact_id' placeholder='artifact ID (production)'><input name='new_task_path' placeholder='local path (development)'></div>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Choose registered tasks or create new task packages without leaving this workflow.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or add new task packages below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Create new task packages</label><p class='hint'>For each new task, provide exactly one artifact ID or local path. Artifact IDs are portable across worker nodes.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another task</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
     return _admin_page("Create contest", content, user=user, active="contests")
 
 
 @app.post("/admin/contests", response_class=HTMLResponse)
-def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
+def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), selected_task_ref: list[str] | None = Form(None), new_task_ref: list[str] | None = Form(None), new_task_kind: list[str] | None = Form(None), new_task_artifact_id: list[str] | None = Form(None), new_task_path: list[str] | None = Form(None), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    refs = tuple(value.strip() for value in task_refs.replace(",", "\n").splitlines() if value.strip())
+    refs_list: list[str] = []
+    for value in (selected_task_ref or []) + [item for item in task_refs.replace(",", "\n").splitlines() if item.strip()]:
+        normalized = value.strip()
+        if normalized and normalized not in refs_list:
+            refs_list.append(normalized)
+    for index, raw_ref in enumerate(new_task_ref or []):
+        task_ref = raw_ref.strip()
+        if not task_ref:
+            continue
+        kind = (new_task_kind[index] if new_task_kind and index < len(new_task_kind) else "ioai").strip() or "ioai"
+        artifact_id = (new_task_artifact_id[index] if new_task_artifact_id and index < len(new_task_artifact_id) else "").strip()
+        path = (new_task_path[index] if new_task_path and index < len(new_task_path) else "").strip()
+        if bool(artifact_id) == bool(path):
+            content = "<div class='card notice error'>Task '" + _admin_escape(task_ref) + "' needs exactly one artifact ID or local path.</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
+            return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=422)
+        try:
+            payload = {"task_ref": task_ref, "kind": kind, "artifact_id" if artifact_id else "path": artifact_id or path}
+            judge.register_task(**payload)
+        except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
+            content = "<div class='card notice error'>Could not register task '" + _admin_escape(task_ref) + "': " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
+            return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
+        if task_ref not in refs_list:
+            refs_list.append(task_ref)
+    refs = tuple(refs_list)
+    if not refs:
+        content = "<div class='card notice error'>Add or select at least one task before creating the contest.</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=422)
     try:
         platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}))
     except Exception as exc:  # noqa: BLE001 - surface store validation in the UI
