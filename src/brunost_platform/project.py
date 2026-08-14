@@ -101,7 +101,10 @@ def staff_user(user=Depends(current_user)):
 
 @app.get("/healthz")
 def health():
-    return {"status": "ok", "judge": judge.health()}
+    try:
+        return {"status": "ok", "judge": judge.health()}
+    except Exception as exc:  # noqa: BLE001 - expose dependency health to probes
+        raise HTTPException(status_code=503, detail=f"Judge unavailable: {exc}") from exc
 
 
 @app.post("/api/auth/register", status_code=201)
