@@ -1,0 +1,22 @@
+{
+  "name": "@brunost/browser-runtime",
+  "version": "0.1.0",
+  "description": "Framework-neutral browser execution contracts and snapshot orchestration for Brunost workspaces",
+  "license": "MIT",
+  "type": "module",
+  "files": ["dist"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": ">=5.3 <6"
+  }
+}

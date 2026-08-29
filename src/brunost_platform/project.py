@@ -24,12 +24,14 @@ from pydantic import BaseModel, Field
 from brunost_platform.application import PlatformApplication
 from brunost_platform.gateway import gateway_from_environment
 from brunost_platform.identity import LocalIdentityAdapter
-from brunost_platform.models import Contest, Submission, User
+from brunost_platform.models import Contest, Submission, User, WorkerOperation
+from brunost_platform.postgres import PostgresPlatformStore
 from brunost_platform.store import SQLitePlatformStore
 
 
 app = FastAPI(title="Brunost Competition Platform")
-store = SQLitePlatformStore(os.environ.get("BRUNOST_PLATFORM_DATABASE", "platform.db"))
+database = os.environ.get("BRUNOST_PLATFORM_DATABASE", "platform.db")
+store = PostgresPlatformStore(database) if database.startswith(("postgres://", "postgresql://")) else SQLitePlatformStore(database)
 judge = gateway_from_environment()
 platform = PlatformApplication(judge, store=store)
 identity = LocalIdentityAdapter(store)
@@ -68,6 +70,7 @@ class ContestIn(BaseModel):
     contest_id: str = Field(min_length=1, max_length=120)
     name: str = Field(min_length=1, max_length=200)
     task_refs: list[str] = Field(default_factory=list)
+    status: str = "draft"
     leaderboard_visible: bool = False
     best_attempt: bool = True
 
@@ -141,7 +144,7 @@ def me(user=Depends(current_user)):
 
 @app.post("/api/contests", status_code=201)
 def create_contest(request: ContestIn, user=Depends(staff_user)):
-    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs), metadata={"leaderboard_visible": request.leaderboard_visible, "best_attempt": request.best_attempt}), actor=user).as_dict()
+    return platform.create_contest(Contest(request.contest_id, request.name, tuple(request.task_refs), request.status, {"leaderboard_visible": request.leaderboard_visible, "best_attempt": request.best_attempt}), actor=user).as_dict()
 
 
 @app.get("/api/contests")
@@ -255,6 +258,7 @@ def _admin_ui_appendix() -> str:
 # its own server-rendered frontend. The Judge remains the source of truth for
 # execution, workers, tasks, and evaluation state.
 import html
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from fastapi.responses import RedirectResponse
@@ -296,6 +300,14 @@ a { color:inherit; text-decoration:none; }
 .button.secondary { color:var(--ink); background:#edf0f7; }
 .button.danger { background:#fff0f2; color:var(--bad); }
 .button.small { padding:7px 10px; font-size:12px; }
+.worker-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; min-width:270px; }
+.worker-actions form { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.worker-actions input { width:160px; padding:7px 9px; font-size:12px; }
+.danger-zone { margin-top:8px; padding-top:8px; border-top:1px solid #f0d9de; }
+.danger-zone summary { color:var(--bad); cursor:pointer; font-size:12px; font-weight:750; }
+.danger-zone form { display:grid; gap:7px; margin-top:8px; }
+.danger-zone input { width:100%; }
+.operation-error { color:var(--bad); font-size:12px; }
 .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:13px; background:var(--surface); }
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th { padding:12px 16px; color:var(--muted); background:#fafbfe; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
@@ -369,8 +381,22 @@ def _admin_stat(label: str, value, note: str) -> str:
 
 def _admin_status(value: str) -> str:
     normalized = str(value).lower()
-    kind = "good" if normalized in {"ok", "ready", "running", "completed", "healthy"} else "warn" if normalized in {"queued", "busy", "pending"} else "bad" if normalized in {"failed", "error", "offline", "cancelled"} else ""
+    kind = "good" if normalized in {"ok", "ready", "running", "completed", "healthy", "succeeded", "paused", "resumed", "revoked"} else "warn" if normalized in {"queued", "busy", "pending", "draining"} else "bad" if normalized in {"failed", "error", "offline", "cancelled"} else ""
     return f"<span class='pill {kind}'>{_admin_escape(value)}</span>"
+
+
+def _worker_action_form(worker_id: str, action: str, label: str, *, danger: bool = False) -> str:
+    encoded_worker_id = quote(str(worker_id), safe="")
+    button_class = "button danger small" if danger else "button secondary small"
+    return "<form method='post' action='/admin/workers/" + encoded_worker_id + "/action'><input type='hidden' name='action' value='" + _admin_escape(action) + "'><input name='reason' required maxlength='500' placeholder='Reason for change' aria-label='Reason for change'><button class='" + button_class + "' type='submit'>" + _admin_escape(label) + "</button></form>"
+
+
+def _worker_actions(worker: dict) -> str:
+    worker_id = str(worker.get("worker_id") or "")
+    toggle = _worker_action_form(worker_id, "resume", "Resume") if worker.get("draining") else _worker_action_form(worker_id, "pause", "Pause")
+    encoded_worker_id = quote(worker_id, safe="")
+    revoke = "<details class='danger-zone'><summary>Revoke credential</summary><form method='post' action='/admin/workers/" + encoded_worker_id + "/action'><input type='hidden' name='action' value='revoke'><input name='reason' required maxlength='500' placeholder='Why is this credential being revoked?' aria-label='Revocation reason'><input name='confirm_text' required pattern='REVOKE' placeholder='Type REVOKE to confirm' aria-label='Type REVOKE to confirm'><button class='button danger small' type='submit'>Revoke access</button></form></details>"
+    return "<div class='worker-actions'>" + toggle + revoke + "</div>"
 
 
 def _admin_slugify(value: str) -> str:
@@ -657,9 +683,50 @@ def admin_workers(request: Request):
     if response:
         return response
     workers = _admin_judge_snapshot().get("workers") or []
-    rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong><div class='hint mono'>" + _admin_escape((item.get("metadata") or {}).get("hostname", "")) + "</div></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("queues") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("capabilities") or []) or "—") + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td></tr>" for item in workers) or "<tr><td colspan='6' class='empty'>No workers enrolled. Enroll nodes through brunostctl.</td></tr>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Judge fleet</p><h2>Workers</h2><p>Capacity, queues, capabilities, and health reported by the execution plane.</p></div><a class='button secondary' href='/admin'>Refresh overview</a></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Queues</th><th>Resources</th><th>Capabilities</th><th>Region</th></tr></thead><tbody>" + rows + "</tbody></table></div><div class='card section'><p class='hint'>Worker enrollment and credential rotation remain operator actions through <span class='mono'>brunostctl node</span>. This dashboard is intentionally read-only for worker security.</p></div>"
+    rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong><div class='hint mono'>" + _admin_escape((item.get("metadata") or {}).get("hostname", "")) + "</div></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("queues") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("capabilities") or []) or "—") + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td><td>" + _worker_actions(item) + "</td></tr>" for item in workers) or "<tr><td colspan='7' class='empty'>No workers enrolled yet. Enroll nodes through brunostctl.</td></tr>"
+    operations = store.list_worker_operations(limit=30)
+    operation_rows = "".join("<tr><td class='mono'>" + _admin_escape(operation.requested_at) + "</td><td><strong>" + _admin_escape(operation.worker_id) + "</strong></td><td>" + _admin_status(operation.action) + "</td><td>" + _admin_status(operation.status) + "</td><td>" + _admin_escape(operation.actor_email) + "</td><td>" + _admin_escape(operation.reason) + ("<div class='operation-error'>" + _admin_escape(operation.error) + "</div>" if operation.error else "") + "</td></tr>" for operation in operations) or "<tr><td colspan='6' class='empty'>No worker operations recorded yet.</td></tr>"
+    message = request.query_params.get("message", "").strip()
+    notice = "<div class='notice'>" + _admin_escape(message) + "</div>" if message else ""
+    content = notice + "<div class='page-head'><div><p class='eyebrow'>Judge fleet</p><h2>Workers</h2><p>Pause new work, resume a drained worker, or revoke access. Every control action requires a reason and is recorded below.</p></div><a class='button secondary' href='/admin'>Refresh overview</a></div><div class='card section'><div class='section-head'><div><h2>Worker controls</h2><p>Pausing lets active work finish. Revoking a credential is an emergency access action and requires explicit confirmation.</p></div></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Queues</th><th>Resources</th><th>Capabilities</th><th>Region</th><th>Controls</th></tr></thead><tbody>" + rows + "</tbody></table></div></div><section class='section'><div class='section-head'><div><h2>Operation history</h2><p>Recent worker changes made from this control room.</p></div></div><div class='table-wrap'><table><thead><tr><th>Requested</th><th>Worker</th><th>Action</th><th>Result</th><th>Operator</th><th>Reason</th></tr></thead><tbody>" + operation_rows + "</tbody></table></div></section>"
     return _admin_page("Workers", content, user=user, active="workers")
+
+
+@app.post("/admin/workers/{worker_id:path}/action", response_class=HTMLResponse)
+def admin_worker_action(request: Request, worker_id: str, action: str = Form(...), reason: str = Form(...), confirm_text: str = Form("")):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    worker_id = worker_id.strip()
+    action = action.strip().lower()
+    reason = reason.strip()
+    if action not in {"pause", "resume", "revoke"}:
+        detail = "Unsupported worker action."
+    elif not worker_id:
+        detail = "Worker ID is required."
+    elif not reason:
+        detail = "A reason is required for every worker operation."
+    elif action == "revoke" and confirm_text.strip().upper() != "REVOKE":
+        detail = "Type REVOKE to confirm credential revocation."
+    else:
+        detail = ""
+    if detail:
+        content = "<div class='card notice error'>" + _admin_escape(detail) + "</div><p><a class='button secondary' href='/admin/workers'>Back to workers</a></p>"
+        return HTMLResponse(_admin_page("Worker operation", content, user=user, active="workers"), status_code=422)
+
+    operation_id = str(uuid.uuid4())
+    requested_at = datetime.now(UTC).isoformat()
+    try:
+        result = judge.revoke_worker_credential(worker_id) if action == "revoke" else judge.drain_worker(worker_id, draining=action == "pause")
+    except Exception as exc:  # noqa: BLE001 - preserve failed operator actions for incident review
+        operation = WorkerOperation(operation_id, worker_id, action, "failed", user.user_id, user.email, reason[:500], requested_at, datetime.now(UTC).isoformat(), {}, str(exc)[:2000])
+        store.record_worker_operation(operation)
+        content = "<div class='card notice error'><strong>Worker operation failed.</strong><br>" + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/workers'>Back to workers</a></p>"
+        return HTMLResponse(_admin_page("Worker operation", content, user=user, active="workers"), status_code=502)
+    operation = WorkerOperation(operation_id, worker_id, action, "succeeded", user.user_id, user.email, reason[:500], requested_at, datetime.now(UTC).isoformat(), result, None)
+    store.record_worker_operation(operation)
+    label = "revoked" if action == "revoke" else "paused" if action == "pause" else "resumed"
+    return RedirectResponse("/admin/workers?message=" + quote("Worker " + worker_id + " " + label + "."), status_code=303)
 
 
 @app.get("/admin/evaluations", response_class=HTMLResponse)
@@ -730,7 +797,7 @@ def _python_files(project_name: str) -> dict[str, str]:
     return {
         "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nexport BRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nexport BRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login with\nthe default admin credentials and immediately change the password. Use /admin\nfor the operator dashboard. It includes task packages, contests, workers,\nevaluations, agent/game definitions, and the platform JSON API.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
         ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=\nBRUNOST_JUDGE_IMAGE=ghcr.io/mlgorithm/brunost-judge@sha256:<64-hex-digest>\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\nBRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nBRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nBRUNOST_DEFAULT_ADMIN_NAME=Country operator\n",
-        "pyproject.toml": """[project]\nname = \"brunost-platform-app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi>=0.115,<1\", \"uvicorn[standard]>=0.30,<1\", \"python-multipart>=0.0.9,<1\", \"brunost-platform-kit>=0.1\"]\n\n[build-system]\nrequires = [\"setuptools>=68\"]\nbuild-backend = \"setuptools.build_meta\"\n""",
+        "pyproject.toml": """[project]\nname = \"brunost-platform-app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi>=0.115,<1\", \"uvicorn[standard]>=0.30,<1\", \"python-multipart>=0.0.9,<1\", \"brunost-platform-kit[postgres]>=0.1\"]\n\n[build-system]\nrequires = [\"setuptools>=68\"]\nbuild-backend = \"setuptools.build_meta\"\n""",
         "Dockerfile": """FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install --no-cache-dir .\nEXPOSE 3000\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"3000\"]\n""",
         "docker-compose.yml": """services:\n  platform:\n    build: .\n    ports: [\"3000:3000\"]\n    environment:\n      BRUNOST_JUDGE_URL: http://judge:8787\n      BRUNOST_PLATFORM_CALLBACK_URL: http://platform:3000/api/judge/callback\n      BRUNOST_PLATFORM_CALLBACK_TOKEN: ${BRUNOST_PLATFORM_CALLBACK_TOKEN:?set a callback bearer token}\n      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n    depends_on: [judge]\n  judge:\n    image: ${BRUNOST_JUDGE_IMAGE:?set BRUNOST_JUDGE_IMAGE to a digest-pinned image}\n    command: [\"server\", \"--host\", \"0.0.0.0\", \"--port\", \"8787\"]\n    environment:\n      BRUNOST_JUDGE_CALLBACK_SIGNING_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_JUDGE_CALLBACK_HOSTS: platform\n    ports: [\"8787:8787\"]\n""",
         "app/__init__.py": "",
@@ -766,11 +833,11 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files = _python_files(project_name)
         files["app/main.py"] = files["app/main.py"].replace(
             "from fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.gateway import gateway_from_environment",
-            "import os\n\nfrom fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.application import PlatformApplication\nfrom brunost_platform.gateway import gateway_from_environment\nfrom brunost_platform.models import Contest, Submission\nfrom brunost_platform.store import SQLitePlatformStore",
+            "import os\n\nfrom fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.application import PlatformApplication\nfrom brunost_platform.gateway import gateway_from_environment\nfrom brunost_platform.models import Contest, Submission\nfrom brunost_platform.postgres import PostgresPlatformStore\nfrom brunost_platform.store import SQLitePlatformStore",
         )
         files["app/main.py"] = files["app/main.py"].replace(
             "judge = gateway_from_environment()",
-            "judge = gateway_from_environment()\nstore = SQLitePlatformStore(os.environ.get(\"BRUNOST_PLATFORM_DATABASE\", \"platform.db\"))\nplatform = PlatformApplication(judge, store=store)",
+            "judge = gateway_from_environment()\ndatabase = os.environ.get(\"BRUNOST_PLATFORM_DATABASE\", \"platform.db\")\nstore = PostgresPlatformStore(database) if database.startswith((\"postgres://\", \"postgresql://\")) else SQLitePlatformStore(database)\nplatform = PlatformApplication(judge, store=store)",
         )
         files["app/main.py"] = files["app/main.py"].replace(
             "    evaluation_kind: str = \"batch\"\n",

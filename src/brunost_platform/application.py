@@ -12,7 +12,6 @@ from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.gateway import JudgeGateway
 from brunost_platform.models import Contest, LeaderboardEntry, Submission
 from brunost_platform.policy import PlatformPolicy
-from brunost_platform.store import SQLitePlatformStore
 
 
 class PlatformApplication:
@@ -22,7 +21,7 @@ class PlatformApplication:
         self,
         judge: JudgeGateway,
         leaderboard: LeaderboardAdapter | None = None,
-        store: SQLitePlatformStore | None = None,
+        store: Any | None = None,
         policy: PlatformPolicy | None = None,
     ) -> None:
         self.judge = judge

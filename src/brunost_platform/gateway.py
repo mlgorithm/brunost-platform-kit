@@ -14,6 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from brunost_platform.artifacts import artifact_id, pack_directory
 
@@ -32,6 +33,10 @@ class JudgeGateway(Protocol):
     def register_task(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def list_workers(self) -> list[dict[str, Any]]: ...
+
+    def drain_worker(self, worker_id: str, *, draining: bool = True) -> dict[str, Any]: ...
+
+    def revoke_worker_credential(self, worker_id: str) -> dict[str, Any]: ...
 
     def list_executions(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]: ...
 
@@ -125,6 +130,15 @@ class HttpJudgeGateway:
 
     def list_workers(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/workers")  # type: ignore[return-value]
+
+    def drain_worker(self, worker_id: str, *, draining: bool = True) -> dict[str, Any]:
+        encoded_worker_id = quote(str(worker_id), safe="")
+        value = "true" if draining else "false"
+        return self._request("POST", f"/v1/workers/{encoded_worker_id}/drain?draining={value}")
+
+    def revoke_worker_credential(self, worker_id: str) -> dict[str, Any]:
+        encoded_worker_id = quote(str(worker_id), safe="")
+        return self._request("POST", f"/v1/workers/{encoded_worker_id}/credential/revoke")
 
     def list_executions(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         query = f"?limit={max(1, min(limit, 500))}"

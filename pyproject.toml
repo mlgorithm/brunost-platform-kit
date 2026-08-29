@@ -24,6 +24,7 @@ brunost-platform = "brunost_platform.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+postgres = ["psycopg[binary]>=3.2,<4"]
 # Install this extra when an application wants the canonical typed SDK
 # transport.  The dependency remains optional so framework integrations can
 # use the tiny standard-library HTTP fallback.

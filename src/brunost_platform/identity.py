@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from brunost_platform.models import User
-from brunost_platform.store import SQLitePlatformStore
 
 
 @dataclass
@@ -22,7 +21,7 @@ class LocalIdentityAdapter:
     authentication outside the judge and Platform Kit.
     """
 
-    store: SQLitePlatformStore
+    store: Any
 
     def provision(self, user: User) -> User:
         return self.store.save_user(user)

@@ -11,11 +11,27 @@ from pathlib import Path
 from typing import Any
 
 from brunost_platform.leaderboard_policy import project_leaderboard
-from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
+from brunost_platform.models import Contest, LeaderboardEntry, Submission, User, WorkerOperation
 
 
 class SQLitePlatformStore:
     """Small durable store that can later be replaced by an ORM adapter."""
+
+    def __new__(cls, database: str | Path = "platform.db"):
+        """Select the shared adapter when a PostgreSQL DSN is supplied.
+
+        The generated reference application historically constructed
+        ``SQLitePlatformStore`` directly.  Keeping this compatibility factory
+        lets existing generated applications move to shared PostgreSQL by
+        changing only ``BRUNOST_PLATFORM_DATABASE``; new code can import
+        ``PostgresPlatformStore`` explicitly.
+        """
+
+        if str(database).strip().startswith(("postgres://", "postgresql://")):
+            from brunost_platform.postgres import PostgresPlatformStore
+
+            return PostgresPlatformStore(str(database))
+        return super().__new__(cls)
 
     def __init__(self, database: str | Path = "platform.db") -> None:
         self.path = str(database)
@@ -68,6 +84,14 @@ class SQLitePlatformStore:
                     contestant_id TEXT NOT NULL, task_ref TEXT NOT NULL, score REAL, recorded_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS worker_operations (
+                    operation_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, action TEXT NOT NULL,
+                    status TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_email TEXT NOT NULL,
+                    reason TEXT NOT NULL, requested_at TEXT NOT NULL, completed_at TEXT,
+                    response_json TEXT NOT NULL, error TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_worker_operations_requested_at
+                    ON worker_operations(requested_at DESC);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
@@ -310,3 +334,56 @@ class SQLitePlatformStore:
         with self._connect() as db:
             rows = db.execute("SELECT * FROM leaderboard_history WHERE contest_id=? ORDER BY recorded_at", (contest_id,)).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
+
+    def record_worker_operation(self, operation: WorkerOperation) -> WorkerOperation:
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO worker_operations(
+                    operation_id,worker_id,action,status,actor_user_id,actor_email,reason,
+                    requested_at,completed_at,response_json,error
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(operation_id) DO UPDATE SET status=excluded.status,
+                    completed_at=excluded.completed_at,response_json=excluded.response_json,
+                    error=excluded.error""",
+                (
+                    operation.operation_id,
+                    operation.worker_id,
+                    operation.action,
+                    operation.status,
+                    operation.actor_user_id,
+                    operation.actor_email,
+                    operation.reason,
+                    operation.requested_at,
+                    operation.completed_at,
+                    json.dumps(operation.response, sort_keys=True),
+                    operation.error,
+                ),
+            )
+        return operation
+
+    def list_worker_operations(self, *, worker_id: str | None = None, limit: int = 50) -> list[WorkerOperation]:
+        query = "SELECT * FROM worker_operations"
+        params: list[Any] = []
+        if worker_id:
+            query += " WHERE worker_id=?"
+            params.append(worker_id)
+        query += " ORDER BY requested_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._connect() as db:
+            rows = db.execute(query, params).fetchall()
+        return [
+            WorkerOperation(
+                row["operation_id"],
+                row["worker_id"],
+                row["action"],
+                row["status"],
+                row["actor_user_id"],
+                row["actor_email"],
+                row["reason"],
+                row["requested_at"],
+                row["completed_at"],
+                json.loads(row["response_json"] or "{}"),
+                row["error"],
+            )
+            for row in rows
+        ]

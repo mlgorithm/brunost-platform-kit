@@ -7,7 +7,7 @@ from pathlib import Path
 from brunost_platform.application import PlatformApplication
 from brunost_platform.identity import LocalIdentityAdapter
 from brunost_platform.leaderboard_policy import project_leaderboard
-from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
+from brunost_platform.models import Contest, LeaderboardEntry, Submission, User, WorkerOperation
 from brunost_platform.store import SQLitePlatformStore
 
 
@@ -79,3 +79,22 @@ def test_versioned_leaderboard_policy_aggregates_and_recovers_failed_callback(tm
     assert store.claim_callback_event("event-1", submission_id="s1", payload=body) == "claimed"
     store.mark_callback_failed("event-1", RuntimeError("projection interrupted"))
     assert store.claim_callback_event("event-1", submission_id="s1", payload=body) == "claimed"
+
+
+def test_worker_operations_are_durable_and_filterable(tmp_path: Path):
+    store = SQLitePlatformStore(tmp_path / "workers.db")
+    operation = WorkerOperation(
+        operation_id="op-1",
+        worker_id="worker-1",
+        action="pause",
+        status="succeeded",
+        actor_user_id="admin-1",
+        actor_email="admin@example.test",
+        reason="Maintenance window",
+        requested_at="2026-08-29T10:00:00+00:00",
+        completed_at="2026-08-29T10:00:01+00:00",
+        response={"worker_id": "worker-1", "draining": True},
+    )
+    store.record_worker_operation(operation)
+    assert store.list_worker_operations(limit=1)[0] == operation
+    assert store.list_worker_operations(worker_id="other") == []

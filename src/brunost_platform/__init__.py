@@ -10,7 +10,7 @@ from brunost_platform.callbacks import verify_judge_callback
 from brunost_platform.gateway import HttpJudgeGateway, JudgeGateway, JudgeGatewayError
 from brunost_platform.identity import ExternalIdentityAdapter, ExternalPrincipal, LocalIdentityAdapter
 from brunost_platform.leaderboard_policy import LeaderboardPolicy, normalize_policy, project_leaderboard
-from brunost_platform.models import Contest, LeaderboardEntry, Submission, User
+from brunost_platform.models import Contest, LeaderboardEntry, Submission, User, WorkerOperation
 from brunost_platform.policy import (
     COURSES,
     CREATE_CONTEST,
@@ -20,6 +20,7 @@ from brunost_platform.policy import (
     USER_CREATED_CONTESTS,
     PlatformPolicy,
 )
+from brunost_platform.postgres import PostgresPlatformStore
 from brunost_platform.store import SQLitePlatformStore
 
 __all__ = [
@@ -39,9 +40,11 @@ __all__ = [
     "LeaderboardPolicy",
     "LocalIdentityAdapter",
     "PlatformPolicy",
+    "PostgresPlatformStore",
     "SQLitePlatformStore",
     "Submission",
     "User",
+    "WorkerOperation",
     "artifact_id",
     "normalize_policy",
     "pack_directory",

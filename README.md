@@ -99,10 +99,22 @@ sandbox execution, scoring, scheduling, and worker operations.
 
 The kit uploads every submission as a deterministic, content-addressed artifact
 before calling the Judge; filesystem paths never cross the service boundary.
-The kit also includes a durable `SQLitePlatformStore` for standalone deployments
-and replaceable identity, notification, and leaderboard adapters. Installations
-can start with SQLite and move to their preferred database or external LMS
-without changing the judge contract.
+The kit includes a durable `SQLitePlatformStore` for local and standalone
+deployments plus a shared `PostgresPlatformStore` for multi-instance
+deployments. Select the PostgreSQL adapter by installing the optional extra and
+using a PostgreSQL DSN; generated applications choose it automatically:
+
+```bash
+python -m pip install 'brunost-platform-kit[postgres]'
+export BRUNOST_PLATFORM_DATABASE='postgresql://platform:password@db.example/platform'
+```
+
+The current PostgreSQL adapter stores the versioned platform document in one
+transactionally locked JSONB row. That gives both app instances consistent
+state while keeping the public contract stable; a future normalized schema can
+replace the adapter without changing Judge integration. Installations can
+start with SQLite and move to PostgreSQL or an external LMS without changing
+the Judge contract.
 
 Judge callbacks are verified with `verify_judge_callback()` and processed by a
 durable receipt state machine (`applying` → `applied`, with failed claims

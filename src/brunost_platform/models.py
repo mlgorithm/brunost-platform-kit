@@ -68,3 +68,23 @@ class User:
         value["roles"] = list(self.roles)
         value.pop("password_hash", None)
         return value
+
+
+@dataclass(frozen=True)
+class WorkerOperation:
+    """An auditable control-plane operation requested for a Judge worker."""
+
+    operation_id: str
+    worker_id: str
+    action: str
+    status: str
+    actor_user_id: str
+    actor_email: str
+    reason: str
+    requested_at: str
+    completed_at: str | None = None
+    response: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
