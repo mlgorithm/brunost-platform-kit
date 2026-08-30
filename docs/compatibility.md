@@ -11,7 +11,8 @@ execution, worker leases, artifacts, and result delivery.
 | --- | --- |
 | Platform Kit | `0.2.x` |
 | Brunost Judge | `1.3.x` and later `1.x` releases |
-| Callback result schema | the version exported by `brunost_platform_kit.contracts` |
+| Task/evaluation/result contracts | the dependency-free models exported by `brunost_platform.contracts` |
+| Callback result schema | `ResultEnvelope` via `normalize_result()` |
 
 The optional `judge` extra is constrained to `brunost-judge>=1.3,<2`. This is
 intentional: applications must not silently install the obsolete pre-1.0 SDK.
@@ -27,3 +28,8 @@ Platform Kit commit.
 
 Backward-compatible additions are allowed within a major line. Breaking
 changes require a new contract/schema version and a migration note.
+
+The typed API is additive. `HttpJudgeGateway.register_task(**fields)` and
+`HttpJudgeGateway.submit_evaluation(**fields)` continue to work for existing
+applications; new applications should pass `TaskRegistration` and
+`EvaluationRequest` objects. Both forms produce the Judge 1.3.x wire payload.

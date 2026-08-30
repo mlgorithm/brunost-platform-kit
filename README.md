@@ -99,6 +99,8 @@ sandbox execution, scoring, scheduling, and worker operations.
 
 The kit uploads every submission as a deterministic, content-addressed artifact
 before calling the Judge; filesystem paths never cross the service boundary.
+For typed task registration, artifact-backed submission, evaluation requests,
+and normalized result envelopes, see [`docs/contracts.md`](docs/contracts.md).
 The kit includes a durable `SQLitePlatformStore` for local and standalone
 deployments plus a shared `PostgresPlatformStore` for multi-instance
 deployments. Select the PostgreSQL adapter by installing the optional extra and

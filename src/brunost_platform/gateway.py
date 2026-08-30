@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from urllib.parse import quote
 
 from brunost_platform.artifacts import artifact_id, pack_directory
+from brunost_platform.contracts import EvaluationRequest, ResultEnvelope, TaskRegistration, normalize_result
 
 
 class JudgeGatewayError(RuntimeError):
@@ -30,7 +31,7 @@ class JudgeGateway(Protocol):
 
     def list_tasks(self) -> list[dict[str, Any]]: ...
 
-    def register_task(self, **kwargs: Any) -> dict[str, Any]: ...
+    def register_task(self, task: TaskRegistration | None = None, **kwargs: Any) -> dict[str, Any]: ...
 
     def list_workers(self) -> list[dict[str, Any]]: ...
 
@@ -52,10 +53,11 @@ class JudgeGateway(Protocol):
 
     def submit_evaluation(
         self,
+        request: EvaluationRequest | None = None,
         *,
-        task_ref: str,
-        submission_artifact_id: str,
-        idempotency_key: str,
+        task_ref: str | None = None,
+        submission_artifact_id: str | None = None,
+        idempotency_key: str | None = None,
         evaluation_kind: str = "batch",
         agent_refs: list[str] | None = None,
         game_ref: str | None = None,
@@ -69,6 +71,8 @@ class JudgeGateway(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_evaluation(self, evaluation_id: str) -> dict[str, Any]: ...
+
+    def get_evaluation_result(self, evaluation_id: str) -> ResultEnvelope: ...
 
     def cancel(self, evaluation_id: str) -> dict[str, Any]: ...
 
@@ -125,8 +129,20 @@ class HttpJudgeGateway:
     def list_tasks(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/tasks")  # type: ignore[return-value]
 
-    def register_task(self, **kwargs: Any) -> dict[str, Any]:
-        return self._request("POST", "/v1/tasks", kwargs)
+    def register_task(self, task: TaskRegistration | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Register a task using a typed contract or the legacy keyword API.
+
+        The keyword form is retained for existing integrations.  New callers
+        should pass ``TaskRegistration`` so the artifact/path invariant and
+        identifier validation happen before an HTTP request is made.
+        """
+        if task is not None:
+            if kwargs:
+                raise TypeError("pass either a TaskRegistration or keyword fields, not both")
+            payload = task.to_payload()
+        else:
+            payload = kwargs
+        return self._request("POST", "/v1/tasks", payload)
 
     def list_workers(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/workers")  # type: ignore[return-value]
@@ -180,10 +196,11 @@ class HttpJudgeGateway:
 
     def submit_evaluation(
         self,
+        request: EvaluationRequest | None = None,
         *,
-        task_ref: str,
-        submission_artifact_id: str,
-        idempotency_key: str,
+        task_ref: str | None = None,
+        submission_artifact_id: str | None = None,
+        idempotency_key: str | None = None,
         evaluation_kind: str = "batch",
         agent_refs: list[str] | None = None,
         game_ref: str | None = None,
@@ -195,42 +212,61 @@ class HttpJudgeGateway:
         resource_class: str = "cpu",
         priority: int = 0,
     ) -> dict[str, Any]:
+        """Submit a typed evaluation request or preserve the legacy API.
+
+        The legacy keyword form intentionally remains available for existing
+        public integrations and is serialized exactly as before.  Typed
+        callers get validation before transport; both forms use the same wire
+        field names.
+        """
+        if request is not None:
+            if any(value is not None for value in (task_ref, submission_artifact_id, idempotency_key)):
+                raise TypeError("pass either an EvaluationRequest or keyword fields, not both")
+            if (
+                evaluation_kind != "batch"
+                or agent_refs is not None
+                or game_ref is not None
+                or seed is not None
+                or callback_url is not None
+                or callback_token is not None
+                or metadata is not None
+                or queue != "default"
+                or resource_class != "cpu"
+                or priority != 0
+            ):
+                raise TypeError("pass either an EvaluationRequest or keyword fields, not both")
+        else:
+            if task_ref is None or submission_artifact_id is None or idempotency_key is None:
+                raise TypeError("task_ref, submission_artifact_id, and idempotency_key are required")
+            payload = {
+                "task_ref": task_ref,
+                "submission_artifact_id": submission_artifact_id,
+                "idempotency_key": idempotency_key,
+                "evaluation_kind": evaluation_kind,
+                "agent_refs": agent_refs or [],
+                "game_ref": game_ref,
+                "seed": seed,
+                "callback_url": callback_url,
+                "callback_token": callback_token,
+                "metadata": metadata or {},
+                "queue": queue,
+                "resource_class": resource_class,
+                "priority": priority,
+            }
+        if request is not None:
+            payload = request.to_payload()
         if self._sdk_client is not None:
-            return self._sdk_client.submit_evaluation(
-                task_ref=task_ref,
-                submission_artifact_id=submission_artifact_id,
-                idempotency_key=idempotency_key,
-                evaluation_kind=evaluation_kind,
-                agent_refs=agent_refs or [],
-                game_ref=game_ref,
-                seed=seed,
-                callback_url=callback_url,
-                callback_token=callback_token,
-                metadata=metadata or {},
-                queue=queue,
-                resource_class=resource_class,
-                priority=priority,
-            )
-        return self._request("POST", "/v1/evaluations", {
-            "task_ref": task_ref,
-            "submission_artifact_id": submission_artifact_id,
-            "idempotency_key": idempotency_key,
-            "evaluation_kind": evaluation_kind,
-            "agent_refs": agent_refs or [],
-            "game_ref": game_ref,
-            "seed": seed,
-            "callback_url": callback_url,
-            "callback_token": callback_token,
-            "metadata": metadata or {},
-            "queue": queue,
-            "resource_class": resource_class,
-            "priority": priority,
-        })
+            return self._sdk_client.submit_evaluation(**payload)
+        return self._request("POST", "/v1/evaluations", payload)
 
     def get_evaluation(self, evaluation_id: str) -> dict[str, Any]:
         if self._sdk_client is not None:
             return self._sdk_client.get_evaluation(evaluation_id)
         return self._request("GET", f"/v1/evaluations/{evaluation_id}")
+
+    def get_evaluation_result(self, evaluation_id: str) -> ResultEnvelope:
+        """Fetch and normalize a Judge result without exposing raw payloads."""
+        return normalize_result(self.get_evaluation(evaluation_id))
 
     def cancel(self, evaluation_id: str) -> dict[str, Any]:
         if self._sdk_client is not None:
