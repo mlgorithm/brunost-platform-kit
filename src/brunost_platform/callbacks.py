@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 from collections.abc import Mapping
 
@@ -26,6 +27,10 @@ def verify_judge_callback(
     timestamp = normalized.get("x-brunost-judge-timestamp", "").strip()
     signature = normalized.get("x-brunost-judge-signature", "").strip()
     if not event_id or not timestamp or not signature:
+        return None
+    if len(event_id) > 255 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", event_id):
+        return None
+    if len(timestamp) > 20 or not timestamp.isdigit():
         return None
     try:
         sent_at = int(timestamp)

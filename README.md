@@ -25,6 +25,10 @@ brunost-platform doctor
 
 The generated FastAPI application is the maintained reference UI/API. It runs
 separately from the Judge and connects to it through `BRUNOST_JUDGE_URL`.
+Production integrations should use HTTPS. Optional `BRUNOST_JUDGE_CA_FILE`,
+`BRUNOST_JUDGE_CLIENT_CERT_FILE`, and `BRUNOST_JUDGE_CLIENT_KEY_FILE` enable
+private-CA verification and mTLS; authenticated redirects are rejected and
+responses are bounded before JSON or artifact parsing.
 
 First start a Judge API and at least one worker using the Judge's
 [`local-worker-smoke-test.md`](https://github.com/mlgorithm/brunost-judge/blob/main/docs/local-worker-smoke-test.md).

@@ -5,6 +5,11 @@ between Premium (or another platform) and Brunost Judge. It targets the
 Judge 1.3.x HTTP shapes and is additive: applications may continue using the
 existing `HttpJudgeGateway` keyword methods.
 
+The gateway rejects authenticated redirects, bounds response reads, and sends
+`Idempotency-Key` on evaluation submissions. Configure
+`BRUNOST_JUDGE_CA_FILE` plus the client certificate/key files when the Judge
+boundary uses a private CA or mTLS.
+
 ## Register a task
 
 Use an immutable artifact ID in production. A local path is supported only for

@@ -9,15 +9,22 @@ the Platform Kit.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from brunost_platform.artifacts import artifact_id, pack_directory
 from brunost_platform.contracts import EvaluationRequest, ResultEnvelope, TaskRegistration, normalize_result
+from brunost_platform.transport import (
+    DEFAULT_MAX_ARTIFACT_RESPONSE_BYTES,
+    DEFAULT_MAX_RESPONSE_BYTES,
+    ResponseTooLarge,
+    SafeHttpTransport,
+)
 
 
 class JudgeGatewayError(RuntimeError):
@@ -84,8 +91,34 @@ class HttpJudgeGateway:
     base_url: str = "http://127.0.0.1:8787"
     token: str | None = None
     timeout: float = 30
+    ca_file: str | Path | None = None
+    client_cert_file: str | Path | None = None
+    client_key_file: str | Path | None = None
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
+    max_artifact_response_bytes: int = DEFAULT_MAX_ARTIFACT_RESPONSE_BYTES
+    require_https: bool | None = None
 
     def __post_init__(self) -> None:
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("Judge URL must be an absolute HTTP(S) URL")
+        production = os.environ.get("BRUNOST_PLATFORM_ENVIRONMENT", os.environ.get("ENVIRONMENT", "")).lower() in {
+            "prod",
+            "production",
+            "staging",
+        }
+        if (production if self.require_https is None else self.require_https) and parsed.scheme != "https":
+            raise ValueError("Judge URL must use HTTPS outside development")
+        if self.timeout <= 0:
+            raise ValueError("Judge timeout must be positive")
+        self.base_url = self.base_url.rstrip("/")
+        self._transport = SafeHttpTransport(
+            ca_file=self.ca_file,
+            client_cert_file=self.client_cert_file,
+            client_key_file=self.client_key_file,
+            max_response_bytes=self.max_response_bytes,
+            max_artifact_response_bytes=self.max_artifact_response_bytes,
+        )
         # When the canonical Judge SDK is installed, use it as the transport
         # implementation.  The small stdlib fallback below keeps the Kit
         # dependency-free and still works for framework integrations that only
@@ -94,6 +127,21 @@ class HttpJudgeGateway:
         try:
             from brunost_judge.sdk import JudgeClient
 
+            self._sdk_client = JudgeClient(
+                self.base_url,
+                self.token,
+                self.timeout,
+                ca_file=self.ca_file,
+                client_cert_file=self.client_cert_file,
+                client_key_file=self.client_key_file,
+                max_response_bytes=self.max_response_bytes,
+                max_artifact_response_bytes=self.max_artifact_response_bytes,
+            )
+        except TypeError:
+            # An older optional SDK can still be used by an application that
+            # has not upgraded its Judge dependency yet.
+            if any((self.ca_file, self.client_cert_file, self.client_key_file)):
+                raise RuntimeError("installed Judge SDK does not support the configured TLS options")
             self._sdk_client = JudgeClient(self.base_url, self.token, self.timeout)
         except ImportError:
             self._sdk_client = None
@@ -105,14 +153,19 @@ class HttpJudgeGateway:
             headers["Content-Type"] = "application/json"
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = urllib.request.Request(self.base_url.rstrip("/") + path, data=data, headers=headers, method=method)
+        if path in {"/v1/executions", "/v1/evaluations"} and payload and payload.get("idempotency_key"):
+            headers["Idempotency-Key"] = str(payload["idempotency_key"])
+        request = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                decoded = json.loads(response.read().decode("utf-8"))
+            with self._transport.open(request, timeout=self.timeout) as response:
+                decoded = json.loads(self._transport.read_json(response).decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
+            try:
+                detail = self._transport.read(exc, max_bytes=64 * 1024).decode(errors="replace")
+            except ResponseTooLarge:
+                detail = "response body too large"
             raise JudgeGatewayError(f"judge API {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, ResponseTooLarge) as exc:
             raise JudgeGatewayError(f"judge API unavailable: {exc}") from exc
         if not isinstance(decoded, dict):
             raise JudgeGatewayError("judge API returned a non-object response")
@@ -178,13 +231,17 @@ class HttpJudgeGateway:
         headers = {"Accept": "application/octet-stream", "Content-Type": "application/gzip"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = urllib.request.Request(self.base_url.rstrip("/") + path, data=data, headers=headers, method=method)
+        request = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.read()
+            with self._transport.open(request, timeout=self.timeout) as response:
+                return self._transport.read_json(response)
         except urllib.error.HTTPError as exc:
-            raise JudgeGatewayError(f"judge API {exc.code}: {exc.read().decode(errors='replace')}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+            try:
+                detail = self._transport.read(exc, max_bytes=64 * 1024).decode(errors="replace")
+            except ResponseTooLarge:
+                detail = "response body too large"
+            raise JudgeGatewayError(f"judge API {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError, ResponseTooLarge) as exc:
             raise JudgeGatewayError(f"judge API unavailable: {exc}") from exc
 
     def upload_artifact(self, path: str | Path) -> dict[str, Any]:
@@ -276,9 +333,17 @@ class HttpJudgeGateway:
 
 def gateway_from_environment() -> HttpJudgeGateway:
     """Build the default HTTP gateway without requiring a framework."""
-    import os
-
     return HttpJudgeGateway(
         base_url=os.environ.get("BRUNOST_JUDGE_URL", "http://127.0.0.1:8787"),
         token=os.environ.get("BRUNOST_JUDGE_API_TOKEN"),
+        ca_file=os.environ.get("BRUNOST_JUDGE_CA_FILE") or None,
+        client_cert_file=os.environ.get("BRUNOST_JUDGE_CLIENT_CERT_FILE") or None,
+        client_key_file=os.environ.get("BRUNOST_JUDGE_CLIENT_KEY_FILE") or None,
+        max_response_bytes=int(os.environ.get("BRUNOST_JUDGE_MAX_RESPONSE_BYTES", str(DEFAULT_MAX_RESPONSE_BYTES))),
+        max_artifact_response_bytes=int(
+            os.environ.get("BRUNOST_JUDGE_MAX_ARTIFACT_RESPONSE_BYTES", str(DEFAULT_MAX_ARTIFACT_RESPONSE_BYTES))
+        ),
+        require_https=os.environ.get("BRUNOST_PLATFORM_REQUIRE_HTTPS", "").lower() == "true"
+        if "BRUNOST_PLATFORM_REQUIRE_HTTPS" in os.environ
+        else None,
     )
