@@ -25,6 +25,7 @@ def test_task_registration_requires_one_artifact_reference_and_emits_judge_paylo
         "task_ref": "contest/quiz-1",
         "kind": "quiz",
         "artifact_id": "a" * 64,
+        "version": 1,
         "runtime": "python-3.13",
         "metadata": {"title": "Quiz 1"},
     }

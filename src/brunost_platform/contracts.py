@@ -154,8 +154,7 @@ class TaskRegistration:
             payload["path"] = self.path
         if self.runtime is not None:
             payload["runtime"] = self.runtime
-        if self.version != 1:
-            payload["version"] = self.version
+        payload["version"] = self.version
         if self.evaluator is not None:
             payload["evaluator"] = self.evaluator
         if self.resource_profile:
