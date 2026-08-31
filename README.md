@@ -16,7 +16,7 @@ cd my-country
 The same CLI scaffolds portable tasks and platform-owned contests:
 
 ```bash
-brunost-platform task new tasks/radar --kind ioai
+brunost-platform task new tasks/radar --kind coding
 brunost-platform contest new contests/national-final --id national-final
 brunost-platform doctor
 ```
@@ -38,11 +38,9 @@ When callbacks are enabled, set the Judge's
 Then create and run the platform application:
 
 ```bash
-cd /Users/sam.urmian/Documents/github/brunost-platform-kit
 python3 -m venv .venv-platform
 source .venv-platform/bin/activate
 python -m pip install -e .
-python -m pip install -e /Users/sam.urmian/Documents/github/brunost-judge
 
 brunost-platform init /tmp/brunost-ui --template python-fastapi
 cd /tmp/brunost-ui
@@ -88,8 +86,10 @@ FastAPI routes, mount a separate frontend, or build another UI against the
 same Platform Kit/Judge boundary.
 
 For a published package, install `brunost-platform-kit` from its release
-instead of the editable source path. The generated application still needs a
-Judge URL, API token, callback secret, and a database location.
+instead of the editable source path. The kit uses the versioned Judge HTTP
+contract directly and has no runtime dependency on a local Judge checkout or
+on Premium. The generated application still needs a Judge URL, API token,
+callback secret, and a database location.
 
 Available templates:
 
@@ -179,9 +179,21 @@ migration path from the reference UI to an existing platform.
 The kit intentionally keeps its core dependency-free. Install framework
 dependencies only in the generated application that needs them.
 
-Install `brunost-platform-kit[judge]` when you want the canonical
-`brunost-judge` SDK transport; otherwise the gateway uses its compatible
-standard-library HTTP fallback.
+For a complete standalone production setup, including the ownership boundary,
+secrets, callbacks, and release checks, see
+[`docs/standalone-deployment.md`](docs/standalone-deployment.md).
+
+## Task families
+
+The public task wizard and CLI intentionally use the current Judge families:
+`coding`, `model`, `quiz`, and `optimization`. Their starter packages include
+the manifest fields and private/public assets needed by the corresponding
+Judge validator. Contest formats such as ICPC or IOI can remain presentation
+choices in a platform, but are not required in the Judge-facing API.
+
+If an application separately installs the canonical `brunost-judge` SDK, the
+gateway can use it automatically; otherwise it uses the compatible
+standard-library HTTP transport.
 
 For country-wide, no-code installation across control-plane and worker nodes,
 use the companion [`brunost-deploy`](https://github.com/mlgorithm/brunost-deploy)

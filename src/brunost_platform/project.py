@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 TEMPLATES = ("python-fastapi", "node-fastify", "minimal")
-TASK_KINDS = ("agent", "game", "icpc", "interactive", "ioai", "ioi", "model", "output-only")
+# These are the current public task families.  Contest-format labels such as
+# IOI/ICPC belong to a platform's presentation, not Judge task registration.
+TASK_KINDS = ("coding", "model", "optimization", "quiz")
 
 
 def _reference_fastapi_main() -> str:
@@ -405,21 +407,25 @@ def _admin_slugify(value: str) -> str:
 
 
 def _admin_judge_kind(task_type: str) -> str:
-    return {"code_training": "ioi", "training_code": "model", "model_prediction": "model", "multiple_choice": "icpc", "agent_arena": "game", "agent_environment": "agent"}.get(task_type, "ioi")
+    aliases = {
+        "coding": "coding",
+        "machine_learning": "model",
+        "model": "model",
+        "optimization": "optimization",
+        "quiz": "quiz",
+        # Preserve existing persisted draft values without exposing obsolete
+        # contest-format labels in the public UI.
+        "code_training": "coding",
+        "training_code": "model",
+        "model_prediction": "model",
+        "multiple_choice": "quiz",
+    }
+    return aliases.get(task_type, "coding")
 
 
 def _admin_scaffold_task_package(contest_id: str, slug: str, task_type: str) -> str:
     root = Path(os.environ.get("BRUNOST_TASK_ROOT", "tasks")).expanduser().resolve() / _admin_slugify(contest_id) / slug
-    (root / "scorer").mkdir(parents=True, exist_ok=True)
-    (root / "public").mkdir(parents=True, exist_ok=True)
-    (root / "private").mkdir(parents=True, exist_ok=True)
-    (root / "tests").mkdir(parents=True, exist_ok=True)
-    kind = _admin_judge_kind(task_type)
-    (root / "judge.yaml").write_text(f"version: 1\nkind: {kind}\nruntime: python-3.13\nscoring: scorer.metrics:evaluate\nnetwork: disabled\n", encoding="utf-8")
-    (root / "scorer" / "metrics.py").write_text("def evaluate(submission_path: str, assets_path: str) -> dict[str, float]:\n    _ = submission_path, assets_path\n    return {'public': 0.0}\n", encoding="utf-8")
-    (root / "public" / "README.md").write_text("Put contestant-visible files here.\n", encoding="utf-8")
-    (root / "private" / ".gitkeep").write_text("", encoding="utf-8")
-    (root / "tests" / "test_task.py").write_text("# Add deterministic scorer tests here.\n", encoding="utf-8")
+    create_task(root, kind=_admin_judge_kind(task_type), force=True)
     return str(root)
 
 
@@ -545,7 +551,7 @@ def admin_tasks(request: Request):
         return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div><p><a class='button secondary' href='/admin/contests'>Open contests</a></p>", user=user), status_code=404)
     tasks = _admin_judge_snapshot().get("tasks") or []
     rows = "".join("<tr><td><strong>" + _admin_escape((item.get("manifest") or {}).get("title") or item.get("task_ref")) + "</strong><div class='hint mono'>" + _admin_escape(item.get("task_ref")) + "</div></td><td>" + _admin_status((item.get("manifest") or {}).get("task_type") or item.get("kind", "unknown")) + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("points") if (item.get("manifest") or {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((item.get("manifest") or {}).get("time_limit_seconds", "—")) + " sec</td><td class='mono'>" + _admin_escape(str((item.get("manifest") or {}).get("digest", "—"))[:16]) + "</td></tr>" for item in tasks) or "<tr><td colspan='5' class='empty'>No task packages registered.</td></tr>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable IOI, ICPC, IOAI, agent, and game task definitions.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th>Digest</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Task packages</h2><p>Register immutable coding, machine-learning, quiz, and optimization task packages.</p></div><a class='button' href='/admin/tasks/new'>Register task</a></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th>Digest</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
     return _admin_page("Tasks", content, user=user, active="tasks")
 
 
@@ -556,13 +562,13 @@ def admin_task_form(request: Request):
         return response
     if not platform.policy.global_task_library_enabled:
         return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div>", user=user), status_code=404)
-    kinds = "".join(f"<option value='{kind}'>{kind.upper()}</option>" for kind in ("ioai", "ioi", "icpc", "interactive", "model", "agent", "game", "output-only"))
+    kinds = "".join(f"<option value='{kind}'>{kind.replace('_', ' ').title()}</option>" for kind in TASK_KINDS)
     content = "<div class='page-head'><div><p class='eyebrow'>Judge registry</p><h2>Register a task</h2><p>Use an artifact ID for a distributed deployment, or a local path for development.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/tasks'><div class='form-grid'><label>Task reference<input name='task_ref' placeholder='national-2026/forecast-v1' required></label><label>Task kind<select name='kind'>" + kinds + "</select></label></div><label>Immutable artifact ID<input name='artifact_id' placeholder='64-character content hash'></label><label>Local task path<input name='path' placeholder='/srv/tasks/forecast-v1'></label><div class='notice'>Provide exactly one of artifact ID or local path. Artifact IDs are the portable production option.</div><button class='button' type='submit'>Register task with Judge</button></form></div>"
     return _admin_page("Register task", content, user=user, active="tasks")
 
 
 @app.post("/admin/tasks", response_class=HTMLResponse)
-def admin_task_create(request: Request, task_ref: str = Form(...), kind: str = Form("ioai"), artifact_id: str = Form(""), path: str = Form("")):
+def admin_task_create(request: Request, task_ref: str = Form(...), kind: str = Form("coding"), artifact_id: str = Form(""), path: str = Form("")):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
@@ -570,6 +576,9 @@ def admin_task_create(request: Request, task_ref: str = Form(...), kind: str = F
         return HTMLResponse(_admin_page("Not available", "<div class='card notice'>The standalone profile creates problems inside a contest. Enable the global task-library capability for an advanced deployment.</div>", user=user), status_code=404)
     if bool(artifact_id.strip()) == bool(path.strip()):
         content = "<div class='card notice error'>Provide exactly one artifact ID or local task path.</div><p><a class='button secondary' href='/admin/tasks/new'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Register task", content, user=user, active="tasks"), status_code=422)
+    if kind.strip() not in TASK_KINDS:
+        content = "<div class='card notice error'>Choose a supported task family.</div><p><a class='button secondary' href='/admin/tasks/new'>Go back</a></p>"
         return HTMLResponse(_admin_page("Register task", content, user=user, active="tasks"), status_code=422)
     payload = {"task_ref": task_ref.strip(), "kind": kind.strip()}
     payload["artifact_id" if artifact_id.strip() else "path"] = (artifact_id if artifact_id.strip() else path).strip()
@@ -600,8 +609,8 @@ def admin_contest_form(request: Request):
     tasks = _admin_judge_snapshot().get("tasks") or []
     existing = "".join("<label style='display:flex;grid-template-columns:auto 1fr;align-items:start;gap:9px;padding:9px 0;font-weight:600'><input type='checkbox' name='selected_task_ref' value='" + _admin_escape(item.get("task_ref")) + "' style='width:auto;margin-top:2px'><span>" + _admin_escape(item.get("task_ref")) + "<small class='hint' style='display:block;font-weight:400'>" + _admin_escape(item.get("kind", "task")) + " · " + _admin_escape((item.get("manifest") or {}).get("runtime", "runtime unspecified")) + "</small></span></label>" for item in tasks)
     existing = existing or "<div class='empty' style='padding:12px 0;text-align:left'>No registered Judge tasks yet. Add the first task below.</div>"
-    task_row = "<div class='task-row card' style='display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;padding:14px;background:#fafbfe'><label>Problem title<input name='new_task_title' placeholder='Maximum subarray'></label><label>Slug<input name='new_task_slug' placeholder='maximum-subarray'></label><label style='grid-column:1/-1'>Task type<select name='new_task_type'><option value='code_training'>Code (judged)</option><option value='training_code'>AI training code</option><option value='model_prediction'>Model / prediction</option><option value='multiple_choice'>Quiz</option><option value='agent_arena'>Agent arena</option><option value='agent_environment'>Agent environment</option></select></label><label>Competition preset<select name='new_task_template'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='new_task_time_limit' type='number' min='1' value='900'></label><label>Points<input name='new_task_points' type='number' min='0' placeholder='100'></label><label>Artifact ID (optional)<input name='new_task_artifact_id' placeholder='Auto-scaffold if empty'></label><label>Local package path (optional)<input name='new_task_path' placeholder='Used for development'></label></div>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Create the contest first, then define problems with the same title, slug, type, preset, time limit, and points workflow used by Brunost.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or create new Brunost-style problems below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Problems to create</label><p class='hint'>Leave package fields empty to generate a starter Judge package automatically. Open the contest workspace afterward to add more problems and edit their task packages.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another problem</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){if(input.name !== 'new_task_time_limit') input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
+    task_row = "<div class='task-row card' style='display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;padding:14px;background:#fafbfe'><label>Problem title<input name='new_task_title' placeholder='Maximum subarray'></label><label>Slug<input name='new_task_slug' placeholder='maximum-subarray'></label><label style='grid-column:1/-1'>Task family<select name='new_task_type'><option value='coding'>Coding — deterministic tests</option><option value='machine_learning'>Machine learning — train/predict</option><option value='quiz'>Quiz — weighted or all-or-nothing</option><option value='optimization'>Optimization — objective and feasibility</option></select></label><label>Package profile<select name='new_task_template'><option value=''>Standard starter</option><option value='percentage'>Coding / percentage score</option><option value='post-competition'>ML / post-competition rerun</option></select></label><label>Time limit (seconds)<input name='new_task_time_limit' type='number' min='1' value='900'></label><label>Points<input name='new_task_points' type='number' min='0' placeholder='100'></label><label>Artifact ID (optional)<input name='new_task_artifact_id' placeholder='Auto-scaffold if empty'></label><label>Local package path (optional)<input name='new_task_path' placeholder='Used for development'></label></div>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Create the contest, then define portable task packages by title, slug, task family, time limit, and points.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or create new task packages below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Problems to create</label><p class='hint'>Leave package fields empty to generate a valid starter Judge package automatically. Open the contest workspace afterward to add more problems and edit their task packages.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another problem</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){if(input.name !== 'new_task_time_limit') input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
     return _admin_page("Create contest", content, user=user, active="contests")
 
 
@@ -620,7 +629,7 @@ def admin_contest_create(request: Request, contest_id: str = Form(...), name: st
         if not title:
             continue
         slug = (new_task_slug[index] if new_task_slug and index < len(new_task_slug) else "").strip()
-        task_type = (new_task_type[index] if new_task_type and index < len(new_task_type) else "code_training").strip() or "code_training"
+        task_type = (new_task_type[index] if new_task_type and index < len(new_task_type) else "coding").strip() or "coding"
         template_key = (new_task_template[index] if new_task_template and index < len(new_task_template) else "").strip()
         time_limit = (new_task_time_limit[index] if new_task_time_limit and index < len(new_task_time_limit) else "900").strip() or "900"
         points = (new_task_points[index] if new_task_points and index < len(new_task_points) else "").strip()
@@ -654,13 +663,26 @@ def admin_contest_workspace(request: Request, contest_id: str):
     rows = "".join("<tr><td><strong>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("title") or ref.rsplit("/", 1)[-1]) + "</strong><div class='hint mono'>" + _admin_escape(ref) + "</div></td><td>" + _admin_status((task_map.get(ref) or {}).get("manifest", {}).get("task_type") or (task_map.get(ref) or {}).get("kind", "draft")) + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("points") if (task_map.get(ref) or {}).get("manifest", {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("time_limit_seconds", "—")) + " sec</td><td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td></tr>" for ref in contest.task_refs) or "<tr><td colspan='5' class='empty'>No problems yet. Add the first one below.</td></tr>"
     if not platform.policy.global_task_library_enabled:
         rows = rows.replace("<td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td>", "<td><span class='hint'>Managed in contest</span></td>")
-    task_types = "<option value='code_training'>Code (judged) — source code against tests</option><option value='training_code'>AI training code — train and score an artifact</option><option value='model_prediction'>Model / prediction — upload a file or model</option><option value='multiple_choice'>Quiz — multiple-choice questions</option><option value='agent_arena'>Agent arena — submissions play each other</option><option value='agent_environment'>Agent environment — hidden scenarios</option>"
+    task_types = "<option value='coding'>Coding — deterministic whole-task or percentage scoring</option><option value='machine_learning'>Machine learning — train/predict or model upload</option><option value='quiz'>Quiz — weighted or all-or-nothing</option><option value='optimization'>Optimization — objective and feasibility</option>"
     content = "<div class='page-head'><div><p class='eyebrow'>Contest workspace</p><h2>" + _admin_escape(contest.name) + "</h2><p class='hint mono'>" + _admin_escape(contest.contest_id) + " · " + _admin_escape(contest.status) + "</p></div><a class='button secondary' href='/admin/contests'>Back to contests</a></div><section class='section'><div class='section-head'><div><h2>Problems</h2><p>Define tasks the same way as Brunost: title, slug, type, preset, time limit, and points.</p></div></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section><section class='card form-card section'><div class='section-head'><div><p class='eyebrow'>Problem authoring</p><h2>Add a problem</h2><p>Creating a problem also creates a starter Judge package. Open the task registry to replace its evaluator and assets.</p></div></div><form class='stack' method='post' action='/admin/contests/" + quote(contest.contest_id) + "/tasks"><div class='form-grid'><label>Problem title<input name='title' placeholder='Maximum subarray' required></label><label>Slug<input name='slug' placeholder='maximum-subarray' required></label></div><label>Task type<select name='task_type'>" + task_types + "</select></label><div class='form-grid'><label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='time_limit' type='number' min='1' value='900'></label></div><label>Points<input name='points' type='number' min='0' placeholder='100'></label><button class='button' type='submit'>Add problem</button></form></section>"
+    content = content.replace(
+        "Define tasks the same way as Brunost: title, slug, type, preset, time limit, and points.",
+        "Define portable task packages by title, slug, task family, time limit, and points.",
+    ).replace(
+        "Creating a problem also creates a starter Judge package.",
+        "Creating a problem creates a valid starter Judge package.",
+    ).replace(
+        "Task type<select",
+        "Task family<select",
+    ).replace(
+        "<label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label>",
+        "<label>Package profile<select name='template_key'><option value=''>Standard starter</option><option value='percentage'>Coding / percentage score</option><option value='post-competition'>ML / post-competition rerun</option></select></label>",
+    )
     return _admin_page("Contest workspace", content, user=user, active="contests")
 
 
 @app.post("/admin/contests/{contest_id}/tasks")
-def admin_contest_task_create(request: Request, contest_id: str, title: str = Form(...), slug: str = Form(...), task_type: str = Form("code_training"), template_key: str = Form(""), time_limit: str = Form("900"), points: str = Form("")):
+def admin_contest_task_create(request: Request, contest_id: str, title: str = Form(...), slug: str = Form(...), task_type: str = Form("coding"), template_key: str = Form(""), time_limit: str = Form("900"), points: str = Form("")):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
@@ -831,6 +853,12 @@ def _minimal_files(project_name: str) -> dict[str, str]:
 def template_files(template: str, project_name: str) -> dict[str, str]:
     if template == "python-fastapi":
         files = _python_files(project_name)
+        files.update(_task_template_files("coding", prefix="tasks/hello/"))
+        files.pop("tasks/hello/scorer/metrics.py", None)
+        files["pyproject.toml"] = files["pyproject.toml"].replace(
+            'brunost-platform-kit[postgres]>=0.1',
+            'brunost-platform-kit[postgres]>=0.3,<0.4',
+        )
         files["app/main.py"] = files["app/main.py"].replace(
             "from fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.gateway import gateway_from_environment",
             "import os\n\nfrom fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.application import PlatformApplication\nfrom brunost_platform.gateway import gateway_from_environment\nfrom brunost_platform.models import Contest, Submission\nfrom brunost_platform.postgres import PostgresPlatformStore\nfrom brunost_platform.store import SQLitePlatformStore",
@@ -908,7 +936,9 @@ def template_files(template: str, project_name: str) -> dict[str, str]:
         files["src/server.ts"] = files["src/server.ts"].replace("\\n", "\n")
         return files
     if template == "minimal":
-        return _minimal_files(project_name)
+        files = _minimal_files(project_name)
+        files.update(_task_template_files("coding", prefix="tasks/hello/"))
+        return files
     raise ValueError(f"unknown template {template!r}; choose one of {', '.join(TEMPLATES)}")
 
 
@@ -927,20 +957,55 @@ def create_project(path: str | Path, *, template: str, force: bool = False) -> P
     return root
 
 
-def create_task(path: str | Path, *, kind: str = "ioai", force: bool = False) -> Path:
+def _task_template_files(kind: str, *, prefix: str = "") -> dict[str, str]:
+    """Return a self-contained starter package accepted by the Judge contract."""
+
+    if kind == "coding":
+        files = {
+            "judge.yaml": "# Brunost Judge coding task\nversion: 1\nkind: coding\nrunner: classic\nlanguage: python\nruntime: python-3.13\ntime_limit_ms: 2000\nmemory_limit_mb: 512\noutput_limit_bytes: 1048576\nnetwork: disabled\nscoring_mode: all_or_nothing\n",
+            "tests/example.in": "1\n",
+            "tests/example.ans": "1\n",
+            "tests/README.md": "Add matching .in/.ans files. Use scoring_mode: percentage for partial credit.\n",
+        }
+    elif kind == "quiz":
+        files = {
+            "judge.yaml": "# Brunost Judge quiz task\nversion: 1\nkind: quiz\nrunner: quiz\nanswer_key: private/questions.json\nscoring_mode: weighted\nfree_text_normalization: casefold_trim\nnetwork: disabled\n",
+            "private/questions.json": '{\n  "questions": [{\n    "id": "example",\n    "type": "single_choice",\n    "prompt": "Replace this example question.",\n    "choices": [{"id": "a", "text": "First answer"}, {"id": "b", "text": "Second answer"}],\n    "answer": "a",\n    "points": 1\n  }]\n}\n',
+            "public/README.md": "Publish question text and choices here if contestants should see them. Keep answers private.\n",
+        }
+    elif kind == "optimization":
+        files = {
+            "judge.yaml": "# Brunost Judge optimization task\nversion: 1\nkind: optimization\nrunner: optimization\nlanguage: python\ntime_limit_ms: 2000\nmemory_limit_mb: 512\noutput_limit_bytes: 1048576\nnetwork: disabled\nevaluation: evaluator:evaluate\nobjective_direction: maximize\nscore_mode: baseline_ratio\naggregation: mean\nevaluator_entrypoint: private/evaluator.py\nbaseline_enabled: true\nbaseline_entrypoint: private/baseline.py\n",
+            "private/evaluator.py": "def evaluate(input_path: str, output_path: str) -> dict:\n    capacity = int(open(input_path, encoding='utf-8').read().strip())\n    value = int(open(output_path, encoding='utf-8').read().strip())\n    return {'feasible': 0 <= value <= capacity, 'objective': value}\n",
+            "private/baseline.py": "import sys\n\nprint(sys.stdin.read().strip())\n",
+            "tests/example.in": "10\n",
+            "public/instances/example.in": "10\n",
+        }
+    elif kind == "model":
+        files = {
+            "judge.yaml": "# Brunost Judge model task (train_predict_v2)\nversion: 2\nkind: model\nrunner: model\nmodel_contract: train_predict_v2\nruntime: python-3.13-ml-v1\nevaluation: evaluator:evaluate\nnetwork: disabled\ntime_limit_ms: 150000\ntraining_time_limit_ms: 120000\nprediction_time_limit_ms: 10000\nevaluator_time_limit_ms: 10000\nmemory_limit_mb: 2048\nmodel_max_bytes: 64000000\ntraining_dataset: public/datasets/training.csv\nprivate_test_dataset: private/datasets/test.csv\nprivate_labels_dataset: private/datasets/labels.csv\nsubmission_entrypoint: submission.py\nbaseline_enabled: false\npost_competition_enabled: false\n",
+            "evaluator.py": "def evaluate(predictions_path: str, labels_path: str) -> float:\n    _ = predictions_path, labels_path\n    return 0.0\n",
+            "submission.example.py": "def train(train_dataset: str, model_path: str) -> None:\n    open(model_path, 'wb').write(b'replace with a trained model')\n\ndef predict(model_path: str, test_dataset: str, predictions_path: str) -> None:\n    _ = model_path, test_dataset\n    open(predictions_path, 'w', encoding='utf-8').write('prediction\\n')\n",
+            "public/datasets/training.csv": "feature,label\n1,0\n",
+            "private/datasets/test.csv": "feature\n2\n",
+            "private/datasets/labels.csv": "label\n1\n",
+        }
+    else:  # pragma: no cover - guarded by create_task and the public CLI
+        raise ValueError(f"unknown task kind {kind!r}; choose one of {', '.join(TASK_KINDS)}")
+    files.setdefault("public/README.md", "Put contestant-visible data here.\n")
+    files.setdefault("private/.gitkeep", "")
+    files.setdefault("tests/test_task.py", "# Add deterministic task-package tests here.\n")
+    return {prefix + name: contents for name, contents in files.items()}
+
+
+def create_task(path: str | Path, *, kind: str = "coding", force: bool = False) -> Path:
     """Create a portable task package without requiring a web framework."""
     if kind not in TASK_KINDS:
         raise ValueError(f"unknown task kind {kind!r}; choose one of {', '.join(TASK_KINDS)}")
     root = Path(path).expanduser().resolve()
     if root.exists() and any(root.iterdir()) and not force:
         raise FileExistsError(f"refusing to overwrite non-empty directory: {root}")
-    files = {
-        "judge.yaml": f"version: 1\nkind: {kind}\nruntime: python-3.13\nscoring: scorer.metrics:evaluate\nnetwork: disabled\n",
-        "scorer/metrics.py": "def evaluate(submission_path: str, assets_path: str) -> dict[str, float]:\n    _ = submission_path, assets_path\n    return {'public': 0.0}\n",
-        "public/README.md": "Put contestant-visible files here.\n",
-        "private/.gitkeep": "",
-        "tests/test_task.py": "# Add deterministic scorer tests here.\n",
-    }
+    files = _task_template_files(kind)
     root.mkdir(parents=True, exist_ok=True)
     for relative, contents in files.items():
         target = root / relative

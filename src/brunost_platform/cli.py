@@ -23,7 +23,7 @@ def _parser() -> argparse.ArgumentParser:
     task_sub = task.add_subparsers(dest="task_command", required=True)
     task_new = task_sub.add_parser("new", help="create a task package")
     task_new.add_argument("path", type=Path)
-    task_new.add_argument("--kind", choices=TASK_KINDS, default="ioai")
+    task_new.add_argument("--kind", choices=TASK_KINDS, default="coding")
     task_new.add_argument("--force", action="store_true")
     contest = sub.add_parser("contest", help="scaffold a platform-owned contest")
     contest_sub = contest.add_subparsers(dest="contest_command", required=True)

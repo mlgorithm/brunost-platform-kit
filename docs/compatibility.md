@@ -9,15 +9,17 @@ execution, worker leases, artifacts, and result delivery.
 
 | Component | Supported line |
 | --- | --- |
-| Platform Kit | `0.2.x` |
+| Platform Kit | `0.3.x` |
 | Brunost Judge | `1.3.x` and later `1.x` releases |
 | Task/evaluation/result contracts | the dependency-free models exported by `brunost_platform.contracts` |
 | Callback result schema | `ResultEnvelope` via `normalize_result()` |
 
-The optional `judge` extra is constrained to `brunost-judge>=1.3,<2`. This is
-intentional: applications must not silently install the obsolete pre-1.0 SDK.
-Premium may use the HTTP boundary and still pins this repository to a reviewed
-Platform Kit commit.
+The Platform Kit deliberately has no runtime dependency on a particular Judge
+Python package. It uses the versioned HTTP boundary, so it can be installed in
+an existing Python/Django/FastAPI application or used alongside a separately
+deployed Judge. If an application independently installs the Judge SDK, the
+gateway can use it; the dependency-free HTTP transport remains the portable
+default. Premium may pin this repository to a reviewed Platform Kit commit.
 
 ## Upgrade rule
 

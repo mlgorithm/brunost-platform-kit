@@ -31,9 +31,9 @@ class FakeJudge:
 def test_sqlite_store_and_result_projection(tmp_path: Path):
     store = SQLitePlatformStore(tmp_path / "platform.db")
     store.save_user(User("u1", "u@example.test", "Student", roles=("contestant",)))
-    store.create_contest(Contest("c1", "National Final", ("ioai/v1",)))
+    store.create_contest(Contest("c1", "National Final", ("coding/v1",)))
     app = PlatformApplication(FakeJudge(), store=store)
-    submission = Submission("s1", "u1", "ioai/v1", "/tmp/submission", "c1")
+    submission = Submission("s1", "u1", "coding/v1", "/tmp/submission", "c1")
     queued = app.submit(submission, evaluation_kind="batch")
     assert queued["status"] == "queued"
     app.record_result(submission, {"evaluation_id": "s1", "status": "completed", "score": 0.9}, visible=True)
@@ -46,8 +46,8 @@ def test_identity_session_and_callback_project_automatically(tmp_path: Path):
     identity = LocalIdentityAdapter(store)
     user = identity.register(email="u@example.test", password="long-enough-password", display_name="Student")
     assert identity.authenticate(email=user.email, password="long-enough-password")
-    contest = store.create_contest(Contest("c1", "Final", ("ioai/v1",), metadata={"leaderboard_visible": True, "best_attempt": True}))
-    submission = Submission("s1", user.user_id, "ioai/v1", str(tmp_path), contest.contest_id)
+    contest = store.create_contest(Contest("c1", "Final", ("coding/v1",), metadata={"leaderboard_visible": True, "best_attempt": True}))
+    submission = Submission("s1", user.user_id, "coding/v1", str(tmp_path), contest.contest_id)
     store.register_contestant(contest.contest_id, user.user_id)
     app = PlatformApplication(FakeJudge(), store=store)
     app.submit(submission)

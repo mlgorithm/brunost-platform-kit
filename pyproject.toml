@@ -1,6 +1,6 @@
 [project]
 name = "brunost-platform-kit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Framework-neutral starter kit for building platforms on Brunost Judge"
 requires-python = ">=3.11"
 dependencies = []
@@ -11,6 +11,7 @@ authors = [{name = "Mlgorithm contributors"}]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Development Status :: 4 - Beta",
   "Framework :: FastAPI",
 ]
 
@@ -25,14 +26,6 @@ brunost-platform = "brunost_platform.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 postgres = ["psycopg[binary]>=3.2,<4"]
-# Install this extra when an application wants the canonical typed SDK
-# transport.  The dependency remains optional so framework integrations can
-# use the tiny standard-library HTTP fallback.
-# Keep the optional SDK transport aligned with the current Judge contract.
-# Premium and generated applications still use the HTTP boundary, but an
-# application installing this extra must not silently resolve an obsolete
-# pre-1.0 Judge client.
-judge = ["brunost-judge>=1.3,<2"]
 
 [build-system]
 requires = ["setuptools>=68"]
