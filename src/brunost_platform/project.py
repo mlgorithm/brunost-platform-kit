@@ -40,6 +40,8 @@ identity = LocalIdentityAdapter(store)
 submission_root = Path(os.environ.get("BRUNOST_SUBMISSION_ROOT", "submissions")).expanduser().resolve()
 callback_url = os.environ.get("BRUNOST_PLATFORM_CALLBACK_URL", "http://127.0.0.1:3000/api/judge/callback")
 service_token = os.environ.get("BRUNOST_PLATFORM_SERVICE_TOKEN", "")
+session_ttl_seconds = int(os.environ.get("BRUNOST_PLATFORM_SESSION_TTL_SECONDS", "86400"))
+session_cookie_secure = os.environ.get("BRUNOST_PLATFORM_SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"} or callback_url.startswith("https://")
 default_admin_email = os.environ.get("BRUNOST_DEFAULT_ADMIN_EMAIL", "admin@example.org").strip().lower()
 default_admin_password = os.environ.get("BRUNOST_DEFAULT_ADMIN_PASSWORD", "change-me-now")
 if not store.list_users():
@@ -220,7 +222,7 @@ def home():
     </style></head><body><main>
       <div class="eyebrow">Brunost competition platform</div>
       <h1>Run better contests.</h1>
-      <p>Manage people, contests, tasks, submissions, workers, evaluations, and leaderboards from one platform. The Judge remains an independent execution service behind the control room.</p>
+      <p>Manage people, contests, submissions, and leaderboards from one platform. Judge remains an independent execution service behind the control room.</p>
       <nav><a href="/admin">Open admin control room</a><a class="secondary" href="/contests">Browse contests</a><a class="secondary" href="/login">Sign in</a></nav>
     </main></body></html>"""
 
@@ -341,13 +343,15 @@ def _admin_escape(value) -> str:
 
 
 def _admin_page(title: str, content: str, *, user=None, active: str = "dashboard") -> str:
-    links = [("dashboard", "◈", "Overview", "/admin"), ("contests", "◇", "Contests", "/admin/contests"), ("evaluations", "◌", "Evaluations", "/admin/evaluations"), ("workers", "♢", "Workers", "/admin/workers"), ("definitions", "⌘", "Agents & games", "/admin/definitions")]
+    links = [("dashboard", "◈", "Overview", "/admin"), ("users", "◉", "Users", "/admin/users"), ("contests", "◇", "Contests", "/admin/contests")]
     if platform.policy.global_task_library_enabled:
-        links.insert(1, ("tasks", "▣", "Tasks", "/admin/tasks"))
+        links.append(("tasks", "▣", "Tasks", "/admin/tasks"))
+    if platform.policy.judge_operations_enabled:
+        links.extend([("evaluations", "◌", "Evaluations", "/admin/evaluations"), ("workers", "♢", "Workers", "/admin/workers"), ("definitions", "⌘", "Agents & games", "/admin/definitions")])
     nav = "".join(f'<a class="{("active" if key == active else "")}" href="{href}"><span>{icon}</span>{label}</a>' for key, icon, label, href in links)
     name = _admin_escape(getattr(user, "display_name", "Operator"))
     initial = _admin_escape((getattr(user, "display_name", "O") or "O")[:1].upper())
-    return "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + _admin_escape(title) + " · Brunost" + "</title><style>" + ADMIN_CSS + "</style></head><body><div class='shell'><aside class='sidebar'><a class='brand' href='/admin'><span class='brand-mark'>B</span>Brunost <span style='font-weight:500;color:#8490b4'>control</span></a><div class='nav-label'>Operations</div><nav class='nav'>" + nav + "</nav><div class='sidebar-foot'>Judge-backed platform<br><span style='color:#6ed6a7'>●</span> control plane connected through API</div></aside><main class='main'><div class='topbar'><div><h1>" + _admin_escape(title) + "</h1><p>Competition operations, task authoring, and evaluation control.</p></div><div class='user-chip'><span class='avatar'>" + initial + "</span><span>" + name + "</span><a class='button secondary small' href='/logout'>Sign out</a></div></div>" + content + "</main></div></body></html>"
+    return "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + _admin_escape(title) + " · Brunost" + "</title><style>" + ADMIN_CSS + "</style></head><body><div class='shell'><aside class='sidebar'><a class='brand' href='/admin'><span class='brand-mark'>B</span>Brunost <span style='font-weight:500;color:#8490b4'>control</span></a><div class='nav-label'>Platform</div><nav class='nav'>" + nav + "</nav><div class='sidebar-foot'>Judge-backed platform<br><span style='color:#6ed6a7'>●</span> control plane connected through API</div></aside><main class='main'><div class='topbar'><div><h1>" + _admin_escape(title) + "</h1><p>Users, contests, submissions, and leaderboard policy.</p></div><div class='user-chip'><span class='avatar'>" + initial + "</span><span>" + name + "</span><a class='button secondary small' href='/logout'>Sign out</a></div></div>" + content + "</main></div></body></html>"
 
 
 def _admin_user_or_redirect(request: Request):
@@ -362,13 +366,19 @@ def _admin_user_or_redirect(request: Request):
 
 
 def _browser_session_user(request: Request):
-    token = request.cookies.get("brunost_session") or request.query_params.get("token")
+    # Tokens in query parameters leak through browser history, referrers, and
+    # reverse-proxy logs. Browser sessions use the HttpOnly cookie only; API
+    # clients continue to use Authorization: Bearer.
+    token = request.cookies.get("brunost_session")
     return store.get_session_user(token) if token else None
 
 
-def _admin_judge_snapshot() -> dict:
+def _admin_judge_snapshot(*, include_operations: bool = False) -> dict:
     snapshot = {}
-    for key, method, default in (("health", "health", {}), ("stats", "stats", {}), ("tasks", "list_tasks", []), ("workers", "list_workers", []), ("executions", "list_executions", []), ("agents", "list_agents", []), ("games", "list_games", [])):
+    requests = [("health", "health", {}), ("tasks", "list_tasks", [])]
+    if include_operations:
+        requests.extend([("workers", "list_workers", []), ("executions", "list_executions", []), ("agents", "list_agents", []), ("games", "list_games", [])])
+    for key, method, default in requests:
         try:
             snapshot[key] = getattr(judge, method)()
         except Exception as exc:  # noqa: BLE001 - dashboard should show degraded dependencies
@@ -472,7 +482,7 @@ def browser_login(next: str = "/admin"):
 
 @app.post("/login", response_class=HTMLResponse)
 def browser_login_submit(email: str = Form(...), password: str = Form(...), next: str = Form("/admin")):
-    token = identity.authenticate(email=email, password=password)
+    token = identity.authenticate(email=email, password=password, ttl_seconds=session_ttl_seconds)
     if not token:
         content = "<div class='card form-card'><div class='notice error'>Invalid email or password.</div><p><a class='button secondary' href='/login'>Try again</a></p></div>"
         return HTMLResponse(_admin_page("Sign in", content), status_code=401)
@@ -481,7 +491,15 @@ def browser_login_submit(email: str = Form(...), password: str = Form(...), next
     if user and user.metadata.get("must_change_password"):
         destination = "/change-password?next=" + quote(destination)
     response = RedirectResponse(destination, status_code=303)
-    response.set_cookie("brunost_session", token, httponly=True, samesite="lax", max_age=86400)
+    response.set_cookie(
+        "brunost_session",
+        token,
+        httponly=True,
+        secure=session_cookie_secure,
+        samesite="lax",
+        max_age=session_ttl_seconds,
+        path="/",
+    )
     return response
 
 
@@ -504,8 +522,9 @@ def browser_change_password_submit(request: Request, current_password: str = For
     else:
         try:
             identity.change_password(user_id=user.user_id, current_password=current_password, new_password=new_password)
-            destination = next if next.startswith("/") else "/admin"
-            return RedirectResponse(destination, status_code=303)
+            response = RedirectResponse("/login", status_code=303)
+            response.delete_cookie("brunost_session", path="/")
+            return response
         except ValueError as exc:
             detail = str(exc)
     content = "<div class='card form-card'><div class='notice error'>" + _admin_escape(detail) + "</div><p><a class='button secondary' href='/change-password'>Try again</a></p></div>"
@@ -513,9 +532,12 @@ def browser_change_password_submit(request: Request, current_password: str = For
 
 
 @app.get("/logout")
-def browser_logout():
+def browser_logout(request: Request):
+    token = request.cookies.get("brunost_session")
+    if token:
+        store.delete_session(token)
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie("brunost_session")
+    response.delete_cookie("brunost_session", path="/")
     return response
 
 
@@ -525,21 +547,56 @@ def admin_dashboard(request: Request):
     if response:
         return response
     data = _admin_judge_snapshot()
-    stats = data.get("stats") or {}
-    workers = data.get("workers") or []
-    executions = data.get("executions") or []
     contests = store.list_contests()
     users = store.list_users()
-    ready = sum(1 for worker in workers if worker.get("status") in {"ready", "busy"} and not worker.get("draining"))
-    active = sum(1 for item in executions if item.get("status") in {"queued", "running"})
     health = data.get("health") or {}
-    cards = "<div class='grid four'>" + _admin_stat("Judge status", "Online" if health.get("status") == "ok" else "Degraded", "control plane") + _admin_stat("Tasks", len(data.get("tasks") or []), "registered task packages") + _admin_stat("Workers", f"{ready}/{len(workers)}", "ready workers") + _admin_stat("Active evaluations", active, "queued or running") + "</div>"
-    worker_rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td></tr>" for item in workers[:8]) or "<tr><td colspan='4' class='empty'>No workers enrolled yet.</td></tr>"
-    evaluation_rows = "".join("<tr><td class='mono'>" + _admin_escape(str(item.get("execution_id", ""))[:12]) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_status(item.get("status", "unknown")) + "</td><td>" + _admin_escape(item.get("score") if item.get("score") is not None else "—") + "</td></tr>" for item in executions[:8]) or "<tr><td colspan='4' class='empty'>No evaluations yet.</td></tr>"
-    content = cards + "<div class='grid two section'><section><div class='section-head'><div><h2>Worker fleet</h2><p>Live capacity reported by the Judge.</p></div><a class='button secondary small' href='/admin/workers'>View all</a></div><div class='table-wrap'><table><thead><tr><th>Worker</th><th>Status</th><th>Resources</th><th>Region</th></tr></thead><tbody>" + worker_rows + "</tbody></table></div></section><section><div class='section-head'><div><h2>Recent evaluations</h2><p>Execution state from the Judge.</p></div><a class='button secondary small' href='/admin/evaluations'>View all</a></div><div class='table-wrap'><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Score</th></tr></thead><tbody>" + evaluation_rows + "</tbody></table></div></section></div>"
+    cards = "<div class='grid four'>" + _admin_stat("Judge connection", "Online" if health.get("status") == "ok" else "Degraded", "execution service") + _admin_stat("Registered tasks", len(data.get("tasks") or []), "immutable Judge packages") + _admin_stat("Users", len(users), "platform accounts") + _admin_stat("Contests", len(contests), "platform-owned") + "</div>"
+    content = cards
     task_action = "<a class='button' href='/admin/tasks/new'>Register a task</a> " if platform.policy.global_task_library_enabled else ""
-    content += "<div class='grid two section'><section class='card'><div class='section-head'><div><h2>Platform</h2><p>Owned by this application.</p></div></div><div class='grid two'><div><div class='metric-label'>Users</div><div class='metric'>" + str(len(users)) + "</div></div><div><div class='metric-label'>Contests</div><div class='metric'>" + str(len(contests)) + "</div></div></div></section><section class='card'><div class='section-head'><div><h2>Quick actions</h2><p>Common operator workflows.</p></div></div><p>" + task_action + "<a class='button secondary' href='/admin/contests/new'>Create a contest</a></p><p class='hint'>Task packages and execution state remain Judge-owned; contests and leaderboard policy remain Platform-owned.</p></section></div>"
+    content += "<div class='grid two section'><section class='card'><div class='section-head'><div><h2>People and contests</h2><p>Owned by this application.</p></div></div><p><a class='button secondary' href='/admin/users'>Manage users</a> <a class='button secondary' href='/admin/contests'>Manage contests</a></p></section><section class='card'><div class='section-head'><div><h2>Quick actions</h2><p>Common operator workflows.</p></div></div><p>" + task_action + "<a class='button secondary' href='/admin/contests/new'>Create a contest</a></p><p class='hint'>Task packages and execution state remain Judge-owned; this control plane selects registered tasks and manages contest policy.</p></section></div>"
     return _admin_page("Operations overview", content, user=user, active="dashboard")
+
+
+def _platform_admin_or_response(user):
+    if user and "admin" in {str(role).lower() for role in user.roles}:
+        return None
+    return HTMLResponse(_admin_page("Access denied", "<div class='card notice error'>Platform administrator privileges are required for user management.</div>", user=user), status_code=403)
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users(request: Request):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    if denied := _platform_admin_or_response(user):
+        return denied
+    rows = "".join(
+        "<tr><td><strong>" + _admin_escape(account.display_name) + "</strong><div class='hint mono'>" + _admin_escape(account.user_id) + "</div></td><td>" + _admin_escape(account.email) + "</td><td>" + _admin_escape(", ".join(account.roles) or "student") + "</td><td>" + _admin_status("disabled" if account.metadata.get("disabled") else "active") + "</td><td>" + ("<span class='hint'>Current account</span>" if account.user_id == user.user_id else "<form method='post' action='/admin/users/" + quote(account.user_id, safe="") + "/status'><input type='hidden' name='disabled' value='" + ("false" if account.metadata.get("disabled") else "true") + "'><button class='button " + ("secondary" if account.metadata.get("disabled") else "danger") + " small' type='submit'>" + ("Re-enable" if account.metadata.get("disabled") else "Disable") + "</button></form>") + "</td></tr>"
+        for account in store.list_users()
+    ) or "<tr><td colspan='5' class='empty'>No platform users yet.</td></tr>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform identity</p><h2>Users</h2><p>Manage local account access. Disabling an account immediately invalidates its active sessions.</p></div></div><div class='table-wrap'><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Access</th></tr></thead><tbody>" + rows + "</tbody></table></div><p class='hint section'>New local accounts use the registration endpoint. For production SSO, use the external identity adapter so passwords remain with your identity provider.</p>"
+    return _admin_page("Users", content, user=user, active="users")
+
+
+@app.post("/admin/users/{user_id}/status")
+def admin_user_status(request: Request, user_id: str, disabled: bool = Form(...)):
+    user, response = _admin_user_or_redirect(request)
+    if response:
+        return response
+    if denied := _platform_admin_or_response(user):
+        return denied
+    account = store.get_user(user_id)
+    if account is None:
+        return HTMLResponse(_admin_page("User not found", "<div class='card notice error'>This user does not exist.</div>", user=user), status_code=404)
+    if account.user_id == user.user_id:
+        return HTMLResponse(_admin_page("User management", "<div class='card notice error'>You cannot disable your own active administrator account.</div>", user=user), status_code=422)
+    active_admins = [item for item in store.list_users() if "admin" in item.roles and not item.metadata.get("disabled")]
+    if disabled and "admin" in account.roles and len(active_admins) <= 1:
+        return HTMLResponse(_admin_page("User management", "<div class='card notice error'>At least one active administrator is required.</div>", user=user), status_code=422)
+    updated = User(account.user_id, account.email, account.display_name, account.organization_id, account.roles, {**account.metadata, "disabled": disabled}, account.password_hash)
+    store.save_user(updated)
+    store.delete_user_sessions(account.user_id)
+    return RedirectResponse("/admin/users", status_code=303)
 
 
 @app.get("/admin/tasks", response_class=HTMLResponse)
@@ -608,41 +665,22 @@ def admin_contest_form(request: Request):
         return response
     tasks = _admin_judge_snapshot().get("tasks") or []
     existing = "".join("<label style='display:flex;grid-template-columns:auto 1fr;align-items:start;gap:9px;padding:9px 0;font-weight:600'><input type='checkbox' name='selected_task_ref' value='" + _admin_escape(item.get("task_ref")) + "' style='width:auto;margin-top:2px'><span>" + _admin_escape(item.get("task_ref")) + "<small class='hint' style='display:block;font-weight:400'>" + _admin_escape(item.get("kind", "task")) + " · " + _admin_escape((item.get("manifest") or {}).get("runtime", "runtime unspecified")) + "</small></span></label>" for item in tasks)
-    existing = existing or "<div class='empty' style='padding:12px 0;text-align:left'>No registered Judge tasks yet. Add the first task below.</div>"
-    task_row = "<div class='task-row card' style='display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;padding:14px;background:#fafbfe'><label>Problem title<input name='new_task_title' placeholder='Maximum subarray'></label><label>Slug<input name='new_task_slug' placeholder='maximum-subarray'></label><label style='grid-column:1/-1'>Task family<select name='new_task_type'><option value='coding'>Coding — deterministic tests</option><option value='machine_learning'>Machine learning — train/predict</option><option value='quiz'>Quiz — weighted or all-or-nothing</option><option value='optimization'>Optimization — objective and feasibility</option></select></label><label>Package profile<select name='new_task_template'><option value=''>Standard starter</option><option value='percentage'>Coding / percentage score</option><option value='post-competition'>ML / post-competition rerun</option></select></label><label>Time limit (seconds)<input name='new_task_time_limit' type='number' min='1' value='900'></label><label>Points<input name='new_task_points' type='number' min='0' placeholder='100'></label><label>Artifact ID (optional)<input name='new_task_artifact_id' placeholder='Auto-scaffold if empty'></label><label>Local package path (optional)<input name='new_task_path' placeholder='Used for development'></label></div>"
-    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Create the contest, then define portable task packages by title, slug, task family, time limit, and points.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Select tasks already registered with the Judge, or create new task packages below.</p></div><div><label>Additional task references<textarea name='task_refs' rows='2' placeholder='Optional: one existing task_ref per line or comma-separated'></textarea></label></div><div><label>Problems to create</label><p class='hint'>Leave package fields empty to generate a valid starter Judge package automatically. Open the contest workspace afterward to add more problems and edit their task packages.</p><div id='new-task-rows'>" + task_row + "</div><button class='button secondary small' type='button' onclick='addTaskRow()' style='margin-top:10px'>+ Add another problem</button><script>function addTaskRow(){const first=document.querySelector('.task-row');const row=first.cloneNode(true);row.querySelectorAll('input').forEach(function(input){if(input.name !== 'new_task_time_limit') input.value=''});document.getElementById('new-task-rows').appendChild(row)}</script></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
+    existing = existing or "<div class='empty' style='padding:12px 0;text-align:left'>No registered Judge tasks yet. Publish a validated package with the Developer Kit first.</div>"
+    content = "<div class='page-head'><div><p class='eyebrow'>Platform registry</p><h2>Create a contest</h2><p>Create the contest and attach immutable task references already registered with Judge.</p></div></div><div class='card form-card'><form class='stack' method='post' action='/admin/contests'><div class='form-grid'><label>Contest ID<input name='contest_id' placeholder='national-final-2026' required></label><label>Display name<input name='name' placeholder='National Final 2026' required></label></div><div><label>Registered Judge tasks</label><div class='card' style='margin-top:8px;padding:12px;background:#fafbfe'>" + existing + "</div><p class='hint'>Task packages are published through the Developer Kit and Judge API. Contest administrators select approved task references here.</p></div><div class='form-grid'><label><span>Leaderboard <select name='leaderboard_visible'><option value='hidden'>Hidden during contest</option><option value='visible'>Visible</option></select></span></label><label><span>Attempts <select name='best_attempt'><option value='best'>Best attempt per task</option><option value='all'>All attempts</option></select></span></label></div><button class='button' type='submit'>Create contest</button></form></div>"
     return _admin_page("Create contest", content, user=user, active="contests")
 
 
 @app.post("/admin/contests", response_class=HTMLResponse)
-def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), task_refs: str = Form(""), selected_task_ref: list[str] | None = Form(None), new_task_title: list[str] | None = Form(None), new_task_slug: list[str] | None = Form(None), new_task_type: list[str] | None = Form(None), new_task_template: list[str] | None = Form(None), new_task_time_limit: list[str] | None = Form(None), new_task_points: list[str] | None = Form(None), new_task_artifact_id: list[str] | None = Form(None), new_task_path: list[str] | None = Form(None), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
+def admin_contest_create(request: Request, contest_id: str = Form(...), name: str = Form(...), selected_task_ref: list[str] | None = Form(None), leaderboard_visible: str = Form("hidden"), best_attempt: str = Form("best")):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    refs_list: list[str] = []
-    for value in (selected_task_ref or []) + [item for item in task_refs.replace(",", "\n").splitlines() if item.strip()]:
-        normalized = value.strip()
-        if normalized and normalized not in refs_list:
-            refs_list.append(normalized)
-    for index, raw_title in enumerate(new_task_title or []):
-        title = raw_title.strip()
-        if not title:
-            continue
-        slug = (new_task_slug[index] if new_task_slug and index < len(new_task_slug) else "").strip()
-        task_type = (new_task_type[index] if new_task_type and index < len(new_task_type) else "coding").strip() or "coding"
-        template_key = (new_task_template[index] if new_task_template and index < len(new_task_template) else "").strip()
-        time_limit = (new_task_time_limit[index] if new_task_time_limit and index < len(new_task_time_limit) else "900").strip() or "900"
-        points = (new_task_points[index] if new_task_points and index < len(new_task_points) else "").strip()
-        artifact_id = (new_task_artifact_id[index] if new_task_artifact_id and index < len(new_task_artifact_id) else "").strip()
-        path = (new_task_path[index] if new_task_path and index < len(new_task_path) else "").strip()
-        try:
-            task_ref = _admin_register_task(contest_id, title=title, slug=slug, task_type=task_type, template_key=template_key, time_limit=time_limit, points=points, artifact_id=artifact_id, path=path)
-        except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
-            content = "<div class='card notice error'>Could not create problem '" + _admin_escape(title) + "': " + _admin_escape(exc) + "</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
-            return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=400)
-        if task_ref not in refs_list:
-            refs_list.append(task_ref)
-    refs = tuple(refs_list)
+    refs = tuple(dict.fromkeys(value.strip() for value in (selected_task_ref or []) if value.strip()))
+    known_refs = {str(item.get("task_ref")) for item in (_admin_judge_snapshot().get("tasks") or [])}
+    unknown_refs = sorted(set(refs).difference(known_refs))
+    if unknown_refs:
+        content = "<div class='card notice error'>Every contest task must be an approved, registered Judge task. Unknown reference: " + _admin_escape(unknown_refs[0]) + "</div><p><a class='button secondary' href='/admin/contests/new'>Go back</a></p>"
+        return HTMLResponse(_admin_page("Create contest", content, user=user, active="contests"), status_code=422)
     try:
         platform.create_contest(Contest(contest_id.strip(), name.strip(), refs, metadata={"leaderboard_visible": leaderboard_visible == "visible", "best_attempt": best_attempt == "best"}), actor=user)
     except Exception as exc:  # noqa: BLE001 - surface store validation in the UI
@@ -662,7 +700,7 @@ def admin_contest_workspace(request: Request, contest_id: str):
     task_map = {item.get("task_ref"): item for item in (_admin_judge_snapshot().get("tasks") or [])}
     rows = "".join("<tr><td><strong>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("title") or ref.rsplit("/", 1)[-1]) + "</strong><div class='hint mono'>" + _admin_escape(ref) + "</div></td><td>" + _admin_status((task_map.get(ref) or {}).get("manifest", {}).get("task_type") or (task_map.get(ref) or {}).get("kind", "draft")) + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("points") if (task_map.get(ref) or {}).get("manifest", {}).get("points") is not None else "—") + "</td><td>" + _admin_escape((task_map.get(ref) or {}).get("manifest", {}).get("time_limit_seconds", "—")) + " sec</td><td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td></tr>" for ref in contest.task_refs) or "<tr><td colspan='5' class='empty'>No problems yet. Add the first one below.</td></tr>"
     if not platform.policy.global_task_library_enabled:
-        rows = rows.replace("<td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td>", "<td><span class='hint'>Managed in contest</span></td>")
+        rows = rows.replace("<td><a class='button secondary small' href='/admin/tasks'>Open task registry</a></td>", "<td><span class='hint'>Registered on Judge</span></td>")
     task_types = "<option value='coding'>Coding — deterministic whole-task or percentage scoring</option><option value='machine_learning'>Machine learning — train/predict or model upload</option><option value='quiz'>Quiz — weighted or all-or-nothing</option><option value='optimization'>Optimization — objective and feasibility</option>"
     content = "<div class='page-head'><div><p class='eyebrow'>Contest workspace</p><h2>" + _admin_escape(contest.name) + "</h2><p class='hint mono'>" + _admin_escape(contest.contest_id) + " · " + _admin_escape(contest.status) + "</p></div><a class='button secondary' href='/admin/contests'>Back to contests</a></div><section class='section'><div class='section-head'><div><h2>Problems</h2><p>Define tasks the same way as Brunost: title, slug, type, preset, time limit, and points.</p></div></div><div class='table-wrap'><table><thead><tr><th>Problem</th><th>Type</th><th>Points</th><th>Time limit</th><th></th></tr></thead><tbody>" + rows + "</tbody></table></div></section><section class='card form-card section'><div class='section-head'><div><p class='eyebrow'>Problem authoring</p><h2>Add a problem</h2><p>Creating a problem also creates a starter Judge package. Open the task registry to replace its evaluator and assets.</p></div></div><form class='stack' method='post' action='/admin/contests/" + quote(contest.contest_id) + "/tasks"><div class='form-grid'><label>Problem title<input name='title' placeholder='Maximum subarray' required></label><label>Slug<input name='slug' placeholder='maximum-subarray' required></label></div><label>Task type<select name='task_type'>" + task_types + "</select></label><div class='form-grid'><label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label><label>Time limit (seconds)<input name='time_limit' type='number' min='1' value='900'></label></div><label>Points<input name='points' type='number' min='0' placeholder='100'></label><button class='button' type='submit'>Add problem</button></form></section>"
     content = content.replace(
@@ -678,6 +716,8 @@ def admin_contest_workspace(request: Request, contest_id: str):
         "<label>Competition preset<select name='template_key'><option value=''>No preset</option><option value='ioi'>IOI / subtasks</option><option value='icpc'>ICPC / batch judging</option><option value='ioai-model'>IOAI / model prediction</option><option value='quiz'>Quiz / multiple choice</option></select></label>",
         "<label>Package profile<select name='template_key'><option value=''>Standard starter</option><option value='percentage'>Coding / percentage score</option><option value='post-competition'>ML / post-competition rerun</option></select></label>",
     )
+    if not platform.policy.global_task_library_enabled:
+        content = content.split("<section class='card form-card section'>", 1)[0]
     return _admin_page("Contest workspace", content, user=user, active="contests")
 
 
@@ -686,6 +726,8 @@ def admin_contest_task_create(request: Request, contest_id: str, title: str = Fo
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.global_task_library_enabled:
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Publish task packages through the Developer Kit before attaching them to a contest.</div>", user=user), status_code=404)
     contest = store.get_contest(contest_id)
     if contest is None:
         return HTMLResponse(_admin_page("Contest not found", "<div class='card notice error'>This contest does not exist.</div>", user=user, active="contests"), status_code=404)
@@ -704,7 +746,9 @@ def admin_workers(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    workers = _admin_judge_snapshot().get("workers") or []
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge worker operations are disabled in this Platform profile. Use brunostctl on the Judge deployment.</div>", user=user), status_code=404)
+    workers = _admin_judge_snapshot(include_operations=True).get("workers") or []
     rows = "".join("<tr><td><strong>" + _admin_escape(item.get("worker_id")) + "</strong><div class='hint mono'>" + _admin_escape((item.get("metadata") or {}).get("hostname", "")) + "</div></td><td>" + _admin_status("draining" if item.get("draining") else item.get("status", "unknown")) + "</td><td>" + _admin_escape(", ".join(item.get("queues") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("resource_classes") or [])) + "</td><td>" + _admin_escape(", ".join(item.get("capabilities") or []) or "—") + "</td><td>" + _admin_escape(item.get("region") or "—") + "</td><td>" + _worker_actions(item) + "</td></tr>" for item in workers) or "<tr><td colspan='7' class='empty'>No workers enrolled yet. Enroll nodes through brunostctl.</td></tr>"
     operations = store.list_worker_operations(limit=30)
     operation_rows = "".join("<tr><td class='mono'>" + _admin_escape(operation.requested_at) + "</td><td><strong>" + _admin_escape(operation.worker_id) + "</strong></td><td>" + _admin_status(operation.action) + "</td><td>" + _admin_status(operation.status) + "</td><td>" + _admin_escape(operation.actor_email) + "</td><td>" + _admin_escape(operation.reason) + ("<div class='operation-error'>" + _admin_escape(operation.error) + "</div>" if operation.error else "") + "</td></tr>" for operation in operations) or "<tr><td colspan='6' class='empty'>No worker operations recorded yet.</td></tr>"
@@ -719,6 +763,8 @@ def admin_worker_action(request: Request, worker_id: str, action: str = Form(...
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge worker operations are disabled in this Platform profile.</div>", user=user), status_code=404)
     worker_id = worker_id.strip()
     action = action.strip().lower()
     reason = reason.strip()
@@ -756,7 +802,9 @@ def admin_evaluations(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    executions = _admin_judge_snapshot().get("executions") or []
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge execution operations are disabled in this Platform profile.</div>", user=user), status_code=404)
+    executions = _admin_judge_snapshot(include_operations=True).get("executions") or []
     rows = "".join("<tr><td class='mono'>" + _admin_escape(item.get("execution_id")) + "</td><td>" + _admin_escape(item.get("task_ref")) + "</td><td>" + _admin_status(item.get("status", "unknown")) + "</td><td>" + _admin_escape(item.get("queue", "default")) + "</td><td>" + _admin_escape(item.get("resource_class", "cpu")) + "</td><td>" + _admin_escape(item.get("score") if item.get("score") is not None else "—") + "</td><td>" + ("<form method='post' action='/admin/evaluations/" + quote(str(item.get("execution_id"))) + "/cancel'><button class='button danger small' type='submit'>Cancel</button></form>" if item.get("status") in {"queued", "running"} else "—") + "</td></tr>" for item in executions) or "<tr><td colspan='7' class='empty'>No evaluations yet.</td></tr>"
     content = "<div class='page-head'><div><p class='eyebrow'>Judge execution plane</p><h2>Evaluations</h2><p>Every submission, queue, resource class, score, and failure state.</p></div></div><div class='table-wrap'><table><thead><tr><th>Evaluation</th><th>Task</th><th>Status</th><th>Queue</th><th>Resource</th><th>Score</th><th>Action</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
     return _admin_page("Evaluations", content, user=user, active="evaluations")
@@ -767,6 +815,8 @@ def admin_cancel_evaluation(request: Request, evaluation_id: str):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge execution operations are disabled in this Platform profile.</div>", user=user), status_code=404)
     try:
         judge.cancel(evaluation_id)
     except Exception:
@@ -779,7 +829,9 @@ def admin_definitions(request: Request):
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
-    data = _admin_judge_snapshot()
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge extension operations are disabled in this Platform profile.</div>", user=user), status_code=404)
+    data = _admin_judge_snapshot(include_operations=True)
     agents = data.get("agents") or []
     games = data.get("games") or []
     agent_rows = "".join("<tr><td>" + _admin_escape(item.get("agent_id")) + "</td><td>" + _admin_escape(item.get("name")) + "</td><td>" + _admin_escape(item.get("protocol", "stdio")) + "</td><td>" + _admin_status("definition") + "</td></tr>" for item in agents) or "<tr><td colspan='4' class='empty'>No agents registered.</td></tr>"
@@ -793,6 +845,8 @@ def admin_agent_create(request: Request, agent_id: str = Form(...), name: str = 
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge extension operations are disabled in this Platform profile.</div>", user=user), status_code=404)
     try:
         judge.register_agent(agent_id=agent_id.strip(), name=name.strip(), protocol=protocol.strip(), required_capabilities=[value.strip() for value in required_capabilities.split(",") if value.strip()])
     except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
@@ -806,6 +860,8 @@ def admin_game_create(request: Request, game_id: str = Form(...), name: str = Fo
     user, response = _admin_user_or_redirect(request)
     if response:
         return response
+    if not platform.policy.can_manage_judge_operations(user):
+        return HTMLResponse(_admin_page("Not available", "<div class='card notice'>Judge extension operations are disabled in this Platform profile.</div>", user=user), status_code=404)
     try:
         judge.register_game(game_id=game_id.strip(), name=name.strip(), task_ref=task_ref.strip(), seats=seats)
     except Exception as exc:  # noqa: BLE001 - show Judge validation in the operator UI
@@ -817,11 +873,11 @@ def admin_game_create(request: Request, game_id: str = Form(...), name: str = Fo
 
 def _python_files(project_name: str) -> dict[str, str]:
     return {
-        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\nexport BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nexport BRUNOST_JUDGE_API_TOKEN=replace-with-judge-token\nexport BRUNOST_JUDGE_CALLBACK_SECRET=replace-with-callback-secret\nexport BRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nexport BRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nexport BRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login with\nthe default admin credentials and immediately change the password. Use /admin\nfor the operator dashboard. It includes task packages, contests, workers,\nevaluations, agent/game definitions, and the platform JSON API.\nReplace the UI or connect an external identity provider without changing the\nJudge execution boundary.\n""",
-        ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=\nBRUNOST_JUDGE_IMAGE=ghcr.io/mlgorithm/brunost-judge@sha256:<64-hex-digest>\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\nBRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nBRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nBRUNOST_DEFAULT_ADMIN_NAME=Country operator\n",
+        "README.md": f"""# {project_name}\n\nGenerated Brunost Platform Kit application. Deploy Judge separately with\n`brunost-deploy`, then point this control plane at its HTTPS API.\n\n```bash\npython -m venv .venv && source .venv/bin/activate\npip install -e .\ncp .env.example .env\n# Set the Judge connection and bootstrap secrets in .env or a secret manager.\nuvicorn app.main:app --host 127.0.0.1 --port 3000\n```\n\nOpen http://127.0.0.1:3000 for the landing page, then sign in at /login with\nthe default admin credentials and immediately change the password. Use /admin\nfor user access and contest administration. Task packages are published through\nthe Developer Kit/Judge API; administrators attach registered task references\nto contests. Replace the UI or connect an external identity provider without\nchanging the Judge execution boundary.\n""",
+        ".env.example": "BRUNOST_JUDGE_URL=http://127.0.0.1:8787\nBRUNOST_JUDGE_API_TOKEN=replace-with-platform-service-token\nBRUNOST_JUDGE_CALLBACK_SECRET=replace-with-judge-callback-secret\nBRUNOST_PLATFORM_CALLBACK_URL=http://127.0.0.1:3000/api/judge/callback\nBRUNOST_PLATFORM_CALLBACK_TOKEN=replace-with-callback-token\nBRUNOST_PLATFORM_DATABASE=platform.db\nBRUNOST_SUBMISSION_ROOT=submissions\nBRUNOST_PLATFORM_SESSION_TTL_SECONDS=86400\nBRUNOST_PLATFORM_SESSION_COOKIE_SECURE=false\nBRUNOST_DEFAULT_ADMIN_EMAIL=admin@example.org\nBRUNOST_DEFAULT_ADMIN_PASSWORD=change-me-now\nBRUNOST_DEFAULT_ADMIN_NAME=Country operator\n",
         "pyproject.toml": """[project]\nname = \"brunost-platform-app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\"fastapi>=0.115,<1\", \"uvicorn[standard]>=0.30,<1\", \"python-multipart>=0.0.9,<1\", \"brunost-platform-kit[postgres]>=0.1\"]\n\n[build-system]\nrequires = [\"setuptools>=68\"]\nbuild-backend = \"setuptools.build_meta\"\n""",
         "Dockerfile": """FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install --no-cache-dir .\nEXPOSE 3000\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"3000\"]\n""",
-        "docker-compose.yml": """services:\n  platform:\n    build: .\n    ports: [\"3000:3000\"]\n    environment:\n      BRUNOST_JUDGE_URL: http://judge:8787\n      BRUNOST_PLATFORM_CALLBACK_URL: http://platform:3000/api/judge/callback\n      BRUNOST_PLATFORM_CALLBACK_TOKEN: ${BRUNOST_PLATFORM_CALLBACK_TOKEN:?set a callback bearer token}\n      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n    depends_on: [judge]\n  judge:\n    image: ${BRUNOST_JUDGE_IMAGE:?set BRUNOST_JUDGE_IMAGE to a digest-pinned image}\n    command: [\"server\", \"--host\", \"0.0.0.0\", \"--port\", \"8787\"]\n    environment:\n      BRUNOST_JUDGE_CALLBACK_SIGNING_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set a callback signing secret}\n      BRUNOST_JUDGE_CALLBACK_HOSTS: platform\n    ports: [\"8787:8787\"]\n""",
+        "docker-compose.yml": """services:\n  platform:\n    build: .\n    env_file: .env\n    ports: [\"3000:3000\"]\n    environment:\n      BRUNOST_JUDGE_URL: ${BRUNOST_JUDGE_URL:?set the external Judge HTTPS URL}\n      BRUNOST_JUDGE_API_TOKEN: ${BRUNOST_JUDGE_API_TOKEN:?set the Platform service token}\n      BRUNOST_PLATFORM_CALLBACK_URL: ${BRUNOST_PLATFORM_CALLBACK_URL:?set the public callback URL}\n      BRUNOST_PLATFORM_CALLBACK_TOKEN: ${BRUNOST_PLATFORM_CALLBACK_TOKEN:?set a callback bearer token}\n      BRUNOST_JUDGE_CALLBACK_SECRET: ${BRUNOST_JUDGE_CALLBACK_SECRET:?set the shared callback signing secret}\n      BRUNOST_PLATFORM_SESSION_COOKIE_SECURE: ${BRUNOST_PLATFORM_SESSION_COOKIE_SECURE:-true}\n    volumes:\n      - platform-data:/var/lib/brunost-platform\nvolumes:\n  platform-data: {}\n""",
         "app/__init__.py": "",
         "app/main.py": """from fastapi import FastAPI, HTTPException\nfrom pydantic import BaseModel, Field\n\nfrom brunost_platform.gateway import gateway_from_environment\n\napp = FastAPI(title=\"Brunost Platform\")\njudge = gateway_from_environment()\n\n\nclass EvaluationIn(BaseModel):\n    task_ref: str = Field(min_length=1)\n    submission_path: str = Field(min_length=1)\n    idempotency_key: str = Field(min_length=1)\n    evaluation_kind: str = \"batch\"\n    agent_refs: list[str] = []\n    game_ref: str | None = None\n    seed: int | None = None\n\n\n@app.get(\"/healthz\")\ndef health():\n    try:\n        return {\"status\": \"ok\", \"judge\": judge.health()}\n    except Exception as exc:\n        raise HTTPException(status_code=503, detail=str(exc)) from exc\n\n\n@app.post(\"/api/evaluations\", status_code=202)\ndef submit_evaluation(request: EvaluationIn):\n    return judge.submit_evaluation(**request.model_dump())\n\n\n@app.get(\"/api/evaluations/{evaluation_id}\")\ndef get_evaluation(evaluation_id: str):\n    return judge.get_evaluation(evaluation_id)\n""",
         "tasks/hello/judge.yaml": """version: 1\nkind: ioai\nruntime: python-3.13\nscoring: scorer.metrics:evaluate\nnetwork: disabled\n""",

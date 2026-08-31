@@ -62,15 +62,20 @@ uvicorn app.main:app --host 127.0.0.1 --port 3000
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000) for the reference landing
 page, [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login) to sign in, and
 [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) for the operator
-control room. The dashboard covers task packages, contests, workers,
-evaluations, agent/game definitions, and platform-owned counts. The API remains
-available at [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs).
+control room. The standalone dashboard manages users, access, contests, task
+selection, submissions, and leaderboard policy; it does not administer Judge
+workers or execution credentials. The API remains available at
+[http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs).
 
 The application creates a temporary administrator automatically when the
 database is empty. Sign in with `BRUNOST_DEFAULT_ADMIN_EMAIL` and
 `BRUNOST_DEFAULT_ADMIN_PASSWORD`; the first-run screen requires you to replace
-the temporary password before opening the dashboard. Set both values to unique
-secrets before a shared or production deployment.
+the temporary password before opening the dashboard. Sessions are server-side,
+stored only as token hashes, use `HttpOnly`/`SameSite=Lax` cookies, and are
+revoked on password changes or account disablement. Set
+`BRUNOST_PLATFORM_SESSION_COOKIE_SECURE=true` behind HTTPS (the deployment
+connection template does so by default), and set both bootstrap values to
+unique secrets before a shared or production deployment.
 
 For an already-populated database, additional contestant accounts can still be
 created through the registration endpoint:
@@ -146,9 +151,10 @@ frameworks can use the same dependency-free gateway and contracts.
 The same open-source contest core can serve two deployment profiles. The
 default standalone profile is a small national-contest website: the first
 account is an administrator, later accounts are students, only administrators
-create contests, and problems are authored inside a contest. It does not
-remove Judge APIs or task capabilities; it keeps the optional global task
-library out of the default operator UI.
+create contests. Task authors publish immutable packages through the Developer
+Kit and Judge API; contest administrators attach those registered task
+references to a contest. It keeps the optional global task library and all
+Judge worker/evaluation controls out of the default operator UI.
 
 Premium/advanced deployments keep that exact contest and Judge contract while
 adding private modules such as organizations, courses, richer identity, and a
@@ -197,4 +203,7 @@ standard-library HTTP transport.
 
 For country-wide, no-code installation across control-plane and worker nodes,
 use the companion [`brunost-deploy`](https://github.com/mlgorithm/brunost-deploy)
-repository and its `brunostctl` CLI.
+repository and its `brunostctl` CLI. For a separate Platform Kit application,
+run `brunostctl platform-env --config judge/brunost.yaml --platform-url
+https://contest.example.org`; it generates the exact non-secret Judge
+connection variables and rejects callback hosts that are not allowlisted.

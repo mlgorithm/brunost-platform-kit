@@ -158,14 +158,34 @@ class PostgresPlatformStore:
     def create_session(self, user_id: str, *, ttl_seconds: int = 86400) -> str:
         token = secrets.token_urlsafe(32)
         token_hash = self._token_hash(token)
-        self._update_state(lambda state: state["sessions"].__setitem__(token_hash, {"user_id": user_id, "expires_at": int(time.time()) + ttl_seconds}))
+
+        def mutate(state: dict[str, Any]) -> None:
+            now = int(time.time())
+            state["sessions"] = {
+                key: value for key, value in state["sessions"].items() if int(value.get("expires_at", 0)) > now
+            }
+            state["sessions"][token_hash] = {"user_id": user_id, "expires_at": now + ttl_seconds}
+
+        self._update_state(mutate)
         return token
 
     def get_session_user(self, token: str) -> User | None:
         session = self._read_state()["sessions"].get(self._token_hash(token))
         if not session or int(session["expires_at"]) <= int(time.time()):
             return None
-        return self.get_user(session["user_id"])
+        user = self.get_user(session["user_id"])
+        return user if user and not user.metadata.get("disabled") else None
+
+    def delete_session(self, token: str) -> None:
+        token_hash = self._token_hash(token)
+        self._update_state(lambda state: state["sessions"].pop(token_hash, None))
+
+    def delete_user_sessions(self, user_id: str) -> None:
+        self._update_state(
+            lambda state: state.update(
+                {"sessions": {key: value for key, value in state["sessions"].items() if value.get("user_id") != user_id}}
+            )
+        )
 
     @staticmethod
     def _token_hash(token: str) -> str:

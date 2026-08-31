@@ -60,13 +60,17 @@ class LocalIdentityAdapter:
             metadata,
             self.hash_password(new_password),
         )
-        return self.store.save_user(updated)
+        result = self.store.save_user(updated)
+        self.store.delete_user_sessions(user_id)
+        return result
 
-    def authenticate(self, *, email: str, password: str) -> str | None:
+    def authenticate(self, *, email: str, password: str, ttl_seconds: int = 86400) -> str | None:
         user = self.store.get_user_by_email(email)
-        if not user or not user.password_hash or not self.verify_password(password, user.password_hash):
+        if not user or user.metadata.get("disabled") or not user.password_hash or not self.verify_password(password, user.password_hash):
             return None
-        return self.store.create_session(user.user_id)
+        if ttl_seconds < 1:
+            raise ValueError("session TTL must be positive")
+        return self.store.create_session(user.user_id, ttl_seconds=ttl_seconds)
 
     @staticmethod
     def hash_password(password: str) -> str:

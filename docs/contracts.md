@@ -51,7 +51,7 @@ submission = ArtifactSubmission(
 request = EvaluationRequest.from_submission(
     submission,
     evaluation_kind="batch",
-    callback_url="https://premium.example/api/judge/callback",
+    callback_url="https://platform.example/api/judge/callback",
 )
 judge.submit_evaluation(request)
 ```

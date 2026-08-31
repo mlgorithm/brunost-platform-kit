@@ -61,6 +61,24 @@ def test_identity_session_and_callback_project_automatically(tmp_path: Path):
     assert store.list_leaderboard("c1")[0].score == 0.9
 
 
+def test_password_change_and_disabled_account_revoke_sessions(tmp_path: Path):
+    store = SQLitePlatformStore(tmp_path / "sessions.db")
+    identity = LocalIdentityAdapter(store)
+    user = identity.register(email="u@example.test", password="long-enough-password", display_name="Student")
+    first_token = identity.authenticate(email=user.email, password="long-enough-password")
+    assert first_token and store.get_session_user(first_token)
+
+    identity.change_password(user_id=user.user_id, current_password="long-enough-password", new_password="another-long-password")
+    assert store.get_session_user(first_token) is None
+    second_token = identity.authenticate(email=user.email, password="another-long-password")
+    assert second_token and store.get_session_user(second_token)
+
+    disabled = User(user.user_id, user.email, user.display_name, user.organization_id, user.roles, {"disabled": True}, user.password_hash)
+    store.save_user(disabled)
+    assert store.get_session_user(second_token) is None
+    assert identity.authenticate(email=user.email, password="another-long-password") is None
+
+
 def test_versioned_leaderboard_policy_aggregates_and_recovers_failed_callback(tmp_path: Path):
     entries = [
         LeaderboardEntry("a", "c1", "t1", 4, "a-1", True),

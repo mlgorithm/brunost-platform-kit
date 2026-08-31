@@ -25,6 +25,7 @@ from brunost_platform.policy import (
     CREATE_CONTEST,
     CREATE_NESTED_TASK,
     GLOBAL_TASK_LIBRARY,
+    JUDGE_OPERATIONS,
     MANAGE_CONTEST,
     USER_CREATED_CONTESTS,
     PlatformPolicy,
@@ -37,6 +38,7 @@ __all__ = [
     "CREATE_CONTEST",
     "CREATE_NESTED_TASK",
     "GLOBAL_TASK_LIBRARY",
+    "JUDGE_OPERATIONS",
     "MANAGE_CONTEST",
     "USER_CREATED_CONTESTS",
     "ArtifactSubmission",
@@ -68,4 +70,4 @@ __all__ = [
     "verify_judge_callback",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.1"

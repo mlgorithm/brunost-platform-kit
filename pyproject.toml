@@ -1,6 +1,6 @@
 [project]
 name = "brunost-platform-kit"
-version = "0.3.0"
+version = "0.3.1"
 description = "Framework-neutral starter kit for building platforms on Brunost Judge"
 requires-python = ">=3.11"
 dependencies = []

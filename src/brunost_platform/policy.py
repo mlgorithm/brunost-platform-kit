@@ -21,6 +21,10 @@ CREATE_NESTED_TASK = "contest.task.create"
 GLOBAL_TASK_LIBRARY = "task.global-library"
 COURSES = "courses"
 USER_CREATED_CONTESTS = "contest.user-created"
+# Judge fleet administration is deliberately opt-in.  A Platform Kit service
+# account normally needs only artifact and evaluation access; node enrollment,
+# credential revocation, and queue controls belong to the Judge operator.
+JUDGE_OPERATIONS = "judge.operations"
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,10 @@ class PlatformPolicy:
     def courses_enabled(self) -> bool:
         return self.is_advanced or COURSES in self.enabled_features
 
+    @property
+    def judge_operations_enabled(self) -> bool:
+        return JUDGE_OPERATIONS in self.enabled_features
+
     def enabled(self, capability: str) -> bool:
         if capability in self.enabled_features:
             return True
@@ -76,10 +84,12 @@ class PlatformPolicy:
             return bool(roles.intersection({"admin", "organizer", "teacher", "contest_creator"}))
         return "admin" in roles
 
+    def can_manage_judge_operations(self, actor: User | Any) -> bool:
+        return self.judge_operations_enabled and "admin" in self._roles(actor)
+
     def can_create_global_task(self, actor: User | Any) -> bool:
         return self.global_task_library_enabled and self.can_manage_platform(actor)
 
     @staticmethod
     def _roles(actor: User | Any) -> set[str]:
         return {str(role).strip().lower() for role in getattr(actor, "roles", ()) if str(role).strip()}
-

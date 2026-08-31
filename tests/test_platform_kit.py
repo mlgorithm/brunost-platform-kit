@@ -50,6 +50,16 @@ def test_reference_template_has_headless_premium_identity_boundary():
     assert "x-brunost-roles" in source
 
 
+def test_reference_template_keeps_judge_deployment_separate_and_limits_standalone_admin_scope():
+    files = template_files("python-fastapi", "demo")
+
+    assert "depends_on: [judge]" not in files["docker-compose.yml"]
+    assert "BRUNOST_JUDGE_URL: ${BRUNOST_JUDGE_URL" in files["docker-compose.yml"]
+    assert "Publish task packages through the Developer Kit" in files["app/main.py"]
+    assert "judge_operations_enabled" in files["app/main.py"]
+    assert "request.query_params.get(\"token\")" not in files["app/main.py"]
+
+
 def test_init_refuses_to_overwrite(tmp_path: Path):
     root = tmp_path / "existing"
     root.mkdir()

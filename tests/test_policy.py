@@ -1,6 +1,6 @@
 from brunost_platform.identity import ExternalIdentityAdapter, ExternalPrincipal
 from brunost_platform.models import User
-from brunost_platform.policy import GLOBAL_TASK_LIBRARY, PlatformPolicy
+from brunost_platform.policy import GLOBAL_TASK_LIBRARY, JUDGE_OPERATIONS, PlatformPolicy
 
 
 def user(*roles: str) -> User:
@@ -24,6 +24,14 @@ def test_advanced_policy_allows_creator_roles_and_global_tasks() -> None:
     assert policy.global_task_library_enabled
     assert policy.can_create_global_task(user("teacher"))
     assert policy.enabled(GLOBAL_TASK_LIBRARY)
+    assert not policy.can_manage_judge_operations(user("admin"))
+
+
+def test_judge_operations_require_an_explicit_platform_capability() -> None:
+    policy = PlatformPolicy("advanced", frozenset({JUDGE_OPERATIONS}))
+
+    assert policy.can_manage_judge_operations(user("admin"))
+    assert not policy.can_manage_judge_operations(user("organizer"))
 
 
 def test_external_identity_adapter_normalizes_principal_mapping() -> None:
@@ -48,4 +56,3 @@ def test_external_identity_adapter_normalizes_principal_mapping() -> None:
         metadata={"department": "olympiad"},
     )
     assert adapter.get_subject({}) == "oidc|42"
-

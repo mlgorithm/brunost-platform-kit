@@ -142,13 +142,27 @@ class SQLitePlatformStore:
     def create_session(self, user_id: str, *, ttl_seconds: int = 86400) -> str:
         token = secrets.token_urlsafe(32)
         with self._connect() as db:
+            db.execute("DELETE FROM sessions WHERE expires_at<=?", (int(time.time()),))
             db.execute("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)", (self._token_hash(token), user_id, int(time.time()) + ttl_seconds))
         return token
 
     def get_session_user(self, token: str) -> User | None:
         with self._connect() as db:
             row = db.execute("SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?", (self._token_hash(token), int(time.time()))).fetchone()
-        return self.get_user(row["user_id"]) if row else None
+        user = self.get_user(row["user_id"]) if row else None
+        return user if user and not user.metadata.get("disabled") else None
+
+    def delete_session(self, token: str) -> None:
+        """Invalidate one browser/API session without retaining its token."""
+
+        with self._connect() as db:
+            db.execute("DELETE FROM sessions WHERE token_hash=?", (self._token_hash(token),))
+
+    def delete_user_sessions(self, user_id: str) -> None:
+        """Invalidate every session after a password or account-state change."""
+
+        with self._connect() as db:
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
     @staticmethod
     def _token_hash(token: str) -> str:
